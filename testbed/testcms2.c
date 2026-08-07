@@ -8941,6 +8941,17 @@ int CheckMixedRawAndCooked(void)
 // iccMAX hybrid printer profile, read through the additive plug-in in iccmax_plugin.c
 // --------------------------------------------------------------------------------------------------
 
+// The DToB3 pipeline in the fixture is a curve set of four shaper curves, then an
+// extendedCLUTElement reducing 4 inks to basis coefficients, then a matrix expanding those to 36
+// wavelengths. Three of the shaper curves are singleSampledCurves; the first is deliberately a
+// segmentedCurve holding one ICC.2 formulaCurveSegment of function type 0003h
+// (Y = a*(b*X + c)^gamma + d) with identity parameters gamma=1, a=1, b=1, c=0, d=0. Identity means
+// the spectra below are unchanged by its presence, but reading the profile at all now requires the
+// plug-in-aware parameter lookup: restore the old private ParamsByType[] table with its type cap
+// and this test fails with "Could not read DToB3", while a fixture whose curves are all
+// singleSampledCurves still passes. That is what makes this test cover that path rather than
+// merely coexist with it.
+//
 // The five CMYK probes, and the 36 channel spectra the reference implementation produced for
 // them. Anything structurally wrong shows up immediately: probe 0 is paper white and runs high,
 // probe 4 is full ink and is near zero throughout.
@@ -8952,7 +8963,9 @@ static const cmsFloat32Number IccMaxProbes[5][4] = {
     { 1.00f, 1.00f, 1.00f, 1.00f }
 };
 
-// Generated from .superpowers/proto/reference-spectra.txt (in=4 out=36 stages=3)
+// Captured from the macro-guarded implementation on branch iccmax-hybrid-printer-spectral reading
+// this same fixture, so matching them proves the plug-in is behaviourally equivalent to it rather
+// than merely self-consistent. Pipeline is 4 in, 36 out, 3 stages.
 static const cmsFloat32Number IccMaxRefSpectra[5][36] = {
     {   // probe0
         0.2929276f, 0.3709240f, 0.4679439f, 0.6663543f, 0.9077541f, 0.9907959f,
