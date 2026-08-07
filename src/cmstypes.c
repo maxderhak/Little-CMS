@@ -4238,7 +4238,8 @@ void GenericMPEfree(struct _cms_typehandler_struct* self, void *Ptr)
 // specified either in terms of a formula, or by a sampled curve.
 
 
-// Read an embedded segmented curve
+// Read an embedded segmented curve. The type signature has already been consumed by
+// ReadMPEEmbeddedCurve, which dispatched here.
 static
 cmsToneCurve* ReadSegmentedCurve(struct _cms_typehandler_struct* self, cmsIOHANDLER* io)
 {
@@ -4248,12 +4249,6 @@ cmsToneCurve* ReadSegmentedCurve(struct _cms_typehandler_struct* self, cmsIOHAND
     cmsCurveSegment*  Segments;
     cmsToneCurve* Curve;
     cmsFloat32Number PrevBreak = MINUS_INF;    // - infinite
-
-    // Take signature and channels for each element.
-     if (!_cmsReadUInt32Number(io, (cmsUInt32Number*) &ElementSig)) return NULL;
-
-     // That should be a segmented curve
-     if (ElementSig != cmsSigSegmentedCurve) return NULL;
 
      if (!_cmsReadUInt32Number(io, NULL)) return NULL;
      if (!_cmsReadUInt16Number(io, &nSegments)) return NULL;
@@ -4285,15 +4280,26 @@ cmsToneCurve* ReadSegmentedCurve(struct _cms_typehandler_struct* self, cmsIOHAND
            case cmsSigFormulaCurveSeg: {
 
                cmsUInt16Number Type;
-               cmsUInt32Number ParamsByType[] = { 4, 5, 5 };
+               cmsUInt32Number nParams;
 
                if (!_cmsReadUInt16Number(io, &Type)) goto Error;
                if (!_cmsReadUInt16Number(io, NULL)) goto Error;
 
+               // An ICC formulaCurveSegment function type T is lcms parametric type T + 6,
+               // the convention the built-in curves already follow: ICC 0, 1 and 2 are lcms
+               // 6, 7 and 8. Ask the curve collections how many parameters that type takes,
+               // rather than keeping a private table here, so a type contributed by a
+               // parametric curve plug-in can be read as well as evaluated.
                Segments[i].Type = Type + 6;
-               if (Type > 2) goto Error;
 
-               for (j = 0; j < ParamsByType[Type]; j++) {
+               if (!_cmsGetFormulaCurveSegmentParams(self ->ContextID, Segments[i].Type, &nParams))
+                   goto Error;
+
+               // Params[] is fixed size, and a plug-in declares its own count
+               if (nParams > sizeof(Segments[i].Params) / sizeof(Segments[i].Params[0]))
+                   goto Error;
+
+               for (j = 0; j < nParams; j++) {
 
                    cmsFloat32Number f;
                    if (!_cmsReadFloat32Number(io, &f)) goto Error;
@@ -4363,6 +4369,249 @@ Error:
 }
 
 
+// Read an embedded singleSampledCurve ('sngf', ICC.2:2023 11.2.2.2, Table 108). The type
+// signature has already been consumed by ReadMPEEmbeddedCurve.
+//
+//     0..3   'sngf' signature      ] consumed by the caller
+//     4..7   reserved, shall be 0
+//     8..11  number of entries (N) uInt32Number, at least 2
+//     12..15 input of first entry(F) float32Number
+//     16..19 input of last entry (L) float32Number, greater than F
+//     20..21 lookup extension type uInt16Number, 0 clips and 1 extrapolates
+//     22..23 data encoding type    uInt16Number as valueEncodingType
+//     24..   N entries             per the encoding type
+//
+// This maps onto a three segment cmsToneCurve: the middle segment is the sampled data
+// over [F, L], and the outer two implement the extension behaviour as type 6 formulas
+// with Gamma 1, which cmsgamma.c evaluates as a plain unclamped line. The formulas are
+// continuous with the sampled segment at F and L, so it does not matter which side of the
+// boundary EvalSegmentedFn happens to pick.
+static
+cmsToneCurve* ReadSingleSampledCurve(struct _cms_typehandler_struct* self, cmsIOHANDLER* io, cmsUInt32Number SizeOfTag)
+{
+    cmsUInt32Number nEntries, i, BytesPerSample;
+    cmsFloat32Number FirstEntry, LastEntry, StepSize, Slope;
+    cmsUInt16Number ExtensionType, EncodingType;
+    cmsFloat32Number* SampledPoints = NULL;
+    cmsCurveSegment Seg[3];
+    cmsToneCurve* Curve;
+
+    // Bytes consumed before the samples start: the 'sngf' signature, read by
+    // ReadMPEEmbeddedCurve, plus Table 108's own 20 byte header read below.
+#define SNGF_HEADER_BYTES  24
+
+    if (!_cmsReadUInt32Number(io, NULL)) return NULL;            // reserved
+
+    if (!_cmsReadUInt32Number(io, &nEntries)) return NULL;
+
+    // At least two entries, and keep the allocation sane
+    if (nEntries < 2) return NULL;
+    if (nEntries > 0x10000) return NULL;
+
+    if (!_cmsReadFloat32Number(io, &FirstEntry)) return NULL;
+    if (!_cmsReadFloat32Number(io, &LastEntry)) return NULL;
+
+    // F shall be less than L. This also rejects a NaN in either, since every comparison
+    // against NaN is false.
+    if (!(LastEntry > FirstEntry)) return NULL;
+
+    // An infinite endpoint would make StepSize infinite and the extension slopes zero,
+    // which is not a curve anyone can have meant
+    if (isinf(FirstEntry) || isinf(LastEntry)) {
+
+        cmsSignalError(self ->ContextID, cmsERROR_RANGE,
+            "singleSampledCurve has a non-finite endpoint");
+        return NULL;
+    }
+
+    if (!_cmsReadUInt16Number(io, &ExtensionType)) return NULL;
+    if (!_cmsReadUInt16Number(io, &EncodingType)) return NULL;
+
+    if (ExtensionType > 1) {
+
+        cmsSignalError(self ->ContextID, cmsERROR_UNKNOWN_EXTENSION,
+            "Unknown singleSampledCurve lookup extension type '%d'", ExtensionType);
+        return NULL;
+    }
+
+    // How many bytes each sample takes, per ICC.2:2023 Table 8
+    switch (EncodingType) {
+
+    case 0: BytesPerSample = 4; break;       // float32Number
+#ifndef CMS_NO_HALF_SUPPORT
+    case 1: BytesPerSample = 2; break;       // float16Number
+#endif
+    case 2: BytesPerSample = 2; break;       // uInt16Number
+    case 3: BytesPerSample = 1; break;       // uInt8Number
+
+    default:
+        cmsSignalError(self ->ContextID, cmsERROR_UNKNOWN_EXTENSION,
+            "Unsupported singleSampledCurve value encoding type '%d'", EncodingType);
+        return NULL;
+    }
+
+    // The samples the header declares must fit in the bytes the position table gave this
+    // curve, otherwise the reads below would run off the end of the profile
+    if (SizeOfTag < SNGF_HEADER_BYTES) return NULL;
+    if (nEntries > (SizeOfTag - SNGF_HEADER_BYTES) / BytesPerSample) return NULL;
+
+    SampledPoints = (cmsFloat32Number*) _cmsCalloc(self ->ContextID, nEntries, sizeof(cmsFloat32Number));
+    if (SampledPoints == NULL) return NULL;
+
+    switch (EncodingType) {
+
+    case 0: // float32Number
+        for (i = 0; i < nEntries; i++) {
+
+            if (!_cmsReadFloat32Number(io, &SampledPoints[i])) goto Error;
+        }
+        break;
+
+#ifndef CMS_NO_HALF_SUPPORT
+    case 1: // float16Number
+        for (i = 0; i < nEntries; i++) {
+
+            if (!_cmsReadFloat16Number(io, &SampledPoints[i])) goto Error;
+        }
+        break;
+#endif
+
+    case 2: // uInt16Number, encoding 0.0 to 1.0
+        for (i = 0; i < nEntries; i++) {
+
+            cmsUInt16Number v;
+
+            if (!_cmsReadUInt16Number(io, &v)) goto Error;
+            SampledPoints[i] = (cmsFloat32Number) v / 65535.0f;
+        }
+        break;
+
+    case 3: // uInt8Number, encoding 0.0 to 1.0
+        for (i = 0; i < nEntries; i++) {
+
+            cmsUInt8Number v;
+
+            if (!_cmsReadUInt8Number(io, &v)) goto Error;
+            SampledPoints[i] = (cmsFloat32Number) v / 255.0f;
+        }
+        break;
+
+    default:
+        goto Error;
+    }
+
+    memset(Seg, 0, sizeof(Seg));
+
+    StepSize = (LastEntry - FirstEntry) / (cmsFloat32Number) (nEntries - 1);
+
+    // L > F and both are finite, yet the quotient can still underflow to zero for a
+    // denormal L - F divided by a large nEntries. The extension slopes below divide by
+    // StepSize, so a zero would make them infinite -- or NaN, when the two end samples are
+    // equal and the division is 0/0 -- and cmsEvalToneCurveFloat would then hand back NaN
+    // for any input outside [F, L].
+    if (!(StepSize > 0.0f)) {
+
+        cmsSignalError(self ->ContextID, cmsERROR_RANGE,
+            "singleSampledCurve step size underflowed to zero: %u entries over [%g, %g]",
+            nEntries, (cmsFloat64Number) FirstEntry, (cmsFloat64Number) LastEntry);
+        goto Error;
+    }
+
+    // Below F
+    Seg[0].x0 = MINUS_INF;
+    Seg[0].x1 = FirstEntry;
+    Seg[0].Type = 6;
+    Seg[0].Params[0] = 1.0;                 // Gamma 1, so this is just a*X + b + c
+
+    if (ExtensionType == 0) {
+
+        // Clip to the first entry
+        Seg[0].Params[1] = 0.0;
+        Seg[0].Params[2] = 0.0;
+        Seg[0].Params[3] = SampledPoints[0];
+    }
+    else {
+        // Extrapolate along the line through the first two entries
+        Slope = (SampledPoints[1] - SampledPoints[0]) / StepSize;
+
+        Seg[0].Params[1] = Slope;
+        Seg[0].Params[2] = SampledPoints[0] - Slope * FirstEntry;
+        Seg[0].Params[3] = 0.0;
+    }
+
+    // The sampled data itself, over [F, L]
+    Seg[1].x0 = FirstEntry;
+    Seg[1].x1 = LastEntry;
+    Seg[1].Type = 0;
+    Seg[1].nGridPoints = nEntries;
+    Seg[1].SampledPoints = SampledPoints;
+
+    // Above L
+    Seg[2].x0 = LastEntry;
+    Seg[2].x1 = PLUS_INF;
+    Seg[2].Type = 6;
+    Seg[2].Params[0] = 1.0;
+
+    if (ExtensionType == 0) {
+
+        Seg[2].Params[1] = 0.0;
+        Seg[2].Params[2] = 0.0;
+        Seg[2].Params[3] = SampledPoints[nEntries - 1];
+    }
+    else {
+        Slope = (SampledPoints[nEntries - 1] - SampledPoints[nEntries - 2]) / StepSize;
+
+        Seg[2].Params[1] = Slope;
+        Seg[2].Params[2] = SampledPoints[nEntries - 1] - Slope * LastEntry;
+        Seg[2].Params[3] = 0.0;
+    }
+
+    // cmsBuildSegmentedToneCurve duplicates the sampled points, so ours can go
+    Curve = cmsBuildSegmentedToneCurve(self ->ContextID, 3, Seg);
+    _cmsFree(self ->ContextID, SampledPoints);
+
+    return Curve;
+
+Error:
+    if (SampledPoints != NULL) _cmsFree(self ->ContextID, SampledPoints);
+    return NULL;
+}
+
+#undef SNGF_HEADER_BYTES
+
+
+// Read one curve of a curveSetElement, dispatching on its type signature. ICC.1 only
+// defines the segmentedCurve; ICC.2 adds the singleSampledCurve read above and, not
+// supported here, the sampledCalculatorCurve. Not to be confused with ReadEmbeddedCurve
+// further up, which reads the wholly different curveType/parametricCurveType pair used by
+// lut8, lut16, mAB and mBA.
+static
+cmsToneCurve* ReadMPEEmbeddedCurve(struct _cms_typehandler_struct* self, cmsIOHANDLER* io, cmsUInt32Number SizeOfTag)
+{
+    cmsCurveSegSignature CurveSig;
+
+    if (!_cmsReadUInt32Number(io, (cmsUInt32Number*) &CurveSig)) return NULL;
+
+    switch (CurveSig) {
+
+    case cmsSigSegmentedCurve:
+        return ReadSegmentedCurve(self, io);
+
+    case cmsSigSingleSampledCurve:
+        return ReadSingleSampledCurve(self, io, SizeOfTag);
+
+    default:
+        {
+            char String[5];
+
+            _cmsTagSignature2String(String, (cmsTagSignature) CurveSig);
+            cmsSignalError(self ->ContextID, cmsERROR_UNKNOWN_EXTENSION, "Unknown MPE curve type '%s'", String);
+        }
+        return NULL;
+    }
+}
+
+
 static
 cmsBool ReadMPECurve(struct _cms_typehandler_struct* self,
                      cmsIOHANDLER* io,
@@ -4372,10 +4621,9 @@ cmsBool ReadMPECurve(struct _cms_typehandler_struct* self,
 {
       cmsToneCurve** GammaTables = ( cmsToneCurve**) Cargo;
 
-      GammaTables[n] = ReadSegmentedCurve(self, io);
+      // SizeOfTag is this curve's own size, from the curveSetElement position table
+      GammaTables[n] = ReadMPEEmbeddedCurve(self, io, SizeOfTag);
       return (GammaTables[n] != NULL);
-
-      cmsUNUSED_PARAMETER(SizeOfTag);
 }
 
 static
@@ -4421,7 +4669,7 @@ void *Type_MPEcurve_Read(struct _cms_typehandler_struct* self, cmsIOHANDLER* io,
 
 // Write a single segmented curve. NO CHECK IS PERFORMED ON VALIDITY
 static
-cmsBool WriteSegmentedCurve(cmsIOHANDLER* io, cmsToneCurve* g)
+cmsBool WriteSegmentedCurve(cmsContext ContextID, cmsIOHANDLER* io, cmsToneCurve* g)
 {
     cmsUInt32Number i, j;
     cmsCurveSegment* Segments = g ->Segments;
@@ -4456,20 +4704,31 @@ cmsBool WriteSegmentedCurve(cmsIOHANDLER* io, cmsToneCurve* g)
         }
         else {
             int Type;
-            cmsUInt32Number ParamsByType[] = { 4, 5, 5 };
+            cmsUInt32Number nParams;
 
             // This is a formula-based
             if (!_cmsWriteUInt32Number(io, (cmsUInt32Number) cmsSigFormulaCurveSeg)) goto Error;
             if (!_cmsWriteUInt32Number(io, 0)) goto Error;
 
-            // We only allow 1, 2 and 3 as types
+            // The ICC formulaCurveSegment function type is the lcms parametric type minus 6,
+            // the inverse of the mapping ReadSegmentedCurve applies. A negative lcms type
+            // means the analytic inverse of a curve rather than a curve, and no ICC encoding
+            // can express that, so it is rejected here as it always was.
             Type = ActualSeg ->Type - 6;
-            if (Type > 2 || Type < 0) goto Error;
+            if (Type < 0 || Type > 0xffff) goto Error;
+
+            // Ask the curve collections, plug-ins first, how many parameters this type
+            // takes. A type no collection claims cannot be serialized: the reader would
+            // have no way to know how many parameters to expect back.
+            if (!_cmsGetFormulaCurveSegmentParams(ContextID, ActualSeg ->Type, &nParams))
+                goto Error;
+
+            if (nParams > sizeof(ActualSeg ->Params) / sizeof(ActualSeg ->Params[0])) goto Error;
 
             if (!_cmsWriteUInt16Number(io, (cmsUInt16Number) Type)) goto Error;
             if (!_cmsWriteUInt16Number(io, 0)) goto Error;
 
-            for (j=0; j < ParamsByType[Type]; j++) {
+            for (j=0; j < nParams; j++) {
                 if (!_cmsWriteFloat32Number(io, (cmsFloat32Number) ActualSeg ->Params[j])) goto Error;
             }
         }
@@ -4494,10 +4753,9 @@ cmsBool WriteMPECurve(struct _cms_typehandler_struct* self,
 {
     _cmsStageToneCurvesData* Curves  = (_cmsStageToneCurvesData*) Cargo;
 
-    return WriteSegmentedCurve(io, Curves ->TheCurves[n]);
+    return WriteSegmentedCurve(self ->ContextID, io, Curves ->TheCurves[n]);
 
     cmsUNUSED_PARAMETER(SizeOfTag);
-    cmsUNUSED_PARAMETER(self);
 }
 
 // Write a curve, checking first for validity
@@ -4543,10 +4801,13 @@ void *Type_MPEmatrix_Read(struct _cms_typehandler_struct* self, cmsIOHANDLER* io
     if (!_cmsReadUInt16Number(io, &OutputChans)) return NULL;
 
 
-    // Input and output chans may be ANY (up to 0xffff), 
-    // but we choose to limit to 16 channels for now
-    if (InputChans >= cmsMAXCHANNELS) return NULL;
-    if (OutputChans >= cmsMAXCHANNELS) return NULL;
+    // Input and output chans may be ANY (up to 0xffff), but we choose to limit to
+    // MAX_STAGE_CHANNELS, which is what the pipeline evaluators handle. Both the storage
+    // and EvaluateMatrix are fully dynamic, so nothing else here sets a ceiling. An
+    // expanding matrix is a normal shape: a spectral transform typically ends in one that
+    // takes a handful of basis coefficients out to the full spectrum, e.g. 8 to 36.
+    if (InputChans >= MAX_STAGE_CHANNELS) return NULL;
+    if (OutputChans >= MAX_STAGE_CHANNELS) return NULL;
 
     nElems = (cmsUInt32Number) InputChans * OutputChans;
 
@@ -4645,8 +4906,14 @@ void *Type_MPEclut_Read(struct _cms_typehandler_struct* self, cmsIOHANDLER* io, 
     if (!_cmsReadUInt16Number(io, &InputChans)) return NULL;
     if (!_cmsReadUInt16Number(io, &OutputChans)) return NULL;
 
+    // Input stays bounded by cmsMAXCHANNELS: MAX_INPUT_DIMENSIONS is 15 and sizes
+    // GridPoints[] below, so this is a structural limit of the reader and not a policy.
     if (InputChans == 0 || InputChans >= cmsMAXCHANNELS) goto Error;
-    if (OutputChans == 0 || OutputChans >= cmsMAXCHANNELS) goto Error;
+
+    // Output, on the other hand, is only bounded by what the evaluators handle. A CLUT
+    // element's output count is not a colour space channel count, so the 16 channel
+    // ceiling does not apply to it.
+    if (OutputChans == 0 || OutputChans >= MAX_STAGE_CHANNELS) goto Error;
 
     if (io ->Read(io, Dimensions8, sizeof(cmsUInt8Number), 16) != 16)
         goto Error;
@@ -4796,8 +5063,11 @@ void *Type_MPE_Read(struct _cms_typehandler_struct* self, cmsIOHANDLER* io, cmsU
     if (!_cmsReadUInt16Number(io, &InputChans)) return NULL;
     if (!_cmsReadUInt16Number(io, &OutputChans)) return NULL;
 
-    if (InputChans == 0 || InputChans >= cmsMAXCHANNELS) return NULL;
-    if (OutputChans == 0 || OutputChans >= cmsMAXCHANNELS) return NULL;
+    // MAX_STAGE_CHANNELS rather than cmsMAXCHANNELS: multi process elements are not
+    // constrained by the 16 channel ceiling that applies to a profile's colour spaces,
+    // and cmsPipelineAlloc below accepts whatever the evaluators can handle.
+    if (InputChans == 0 || InputChans >= MAX_STAGE_CHANNELS) return NULL;
+    if (OutputChans == 0 || OutputChans >= MAX_STAGE_CHANNELS) return NULL;
 
     // Allocates an empty LUT
     NewLUT = cmsPipelineAlloc(self ->ContextID, InputChans, OutputChans);

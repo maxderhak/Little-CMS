@@ -206,6 +206,42 @@ _cmsParametricCurvesCollection *GetParametricCurveByType(cmsContext ContextID, i
     return NULL;
 }
 
+// How many parameters a parametric curve type takes, when that type may appear as an ICC
+// formulaCurveSegment function type. Plug-ins are searched before the built-ins, exactly as
+// the evaluator lookup does, so a registered curve type can be serialized as well as
+// evaluated. FALSE when no collection claims the type, or when the type is not one a
+// formula segment can hold.
+//
+// Callers deal in the lcms type numbering, which for a formula segment is the ICC function
+// type plus 6. The built-in collection follows that convention for types 6, 7 and 8 only:
+// 1 to 5 are the ICC.1 parametricCurveType functions, which have a numbering of their own,
+// and 108 and 109 are lcms extensions with no ICC encoding at all -- so 108 must not be
+// mistaken for ICC function type 102. A plug-in registering a type is taken to be declaring
+// a formula segment type, which is how ICC.2 function types 3 and up reach the serializer
+// without core knowing anything about them.
+//
+// Negative types are rejected: IsInSet matches on abs(Type), so a negative would silently
+// resolve to the positive collection, and a negative type means "the analytic inverse of"
+// rather than a curve any ICC encoding can hold.
+cmsBool _cmsGetFormulaCurveSegmentParams(cmsContext ContextID, int Type, cmsUInt32Number* nParams)
+{
+    _cmsParametricCurvesCollection* c;
+    int index;
+
+    if (Type <= 0) return FALSE;
+
+    c = GetParametricCurveByType(ContextID, Type, &index);
+    if (c == NULL) return FALSE;
+
+    // The built-in collection knows its own numbering; a plug-in's types are all taken at
+    // face value.
+    if (c == &DefaultCurves && (Type < 6 || Type > 8)) return FALSE;
+
+    if (nParams != NULL) *nParams = c ->ParameterCount[index];
+
+    return TRUE;
+}
+
 // Low level allocate, which takes care of memory details. nEntries may be zero, and in this case
 // no optimization curve is computed. nSegments may also be zero in the inverse case, where only the
 // optimization curve is given. Both features simultaneously is an error

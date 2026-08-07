@@ -580,7 +580,9 @@ typedef enum {
 
     cmsSigFormulaCurveSeg               = 0x70617266, // 'parf'
     cmsSigSampledCurveSeg               = 0x73616D66, // 'samf'
-    cmsSigSegmentedCurve                = 0x63757266  // 'curf'
+    cmsSigSegmentedCurve                = 0x63757266, // 'curf'
+    cmsSigSingleSampledCurve            = 0x736E6766  // 'sngf', a whole curve rather than
+                                                      // a segment of one (ICC.2 11.2.2.2)
 
 } cmsCurveSegSignature;
 

@@ -910,6 +910,15 @@ struct _cms_curve_struct {
     cmsUInt16Number*   Table16;       // The table itself.
 };
 
+// How many parameters a parametric curve type takes when carried as an ICC
+// formulaCurveSegment, searching the registered plug-in collections before the built-in
+// one. This is what lets the segmented curve serializer in cmstypes.c handle a curve type
+// a plug-in defined, instead of carrying its own table of the three types ICC.1 knows
+// about. FALSE when no collection claims the type, or when the type has no formula segment
+// encoding.
+cmsBool                _cmsGetFormulaCurveSegmentParams(cmsContext ContextID, int Type,
+                                                        cmsUInt32Number* nParams);
+
 
 //  Pipelines & Stages ---------------------------------------------------------------------------------------------
 
@@ -1055,6 +1064,10 @@ CMSCHECKPOINT cmsFormatter CMSEXPORT _cmsGetFormatter(cmsContext ContextID,
 // Half float
 CMSCHECKPOINT cmsFloat32Number CMSEXPORT _cmsHalf2Float(cmsUInt16Number h);
 CMSCHECKPOINT cmsUInt16Number  CMSEXPORT _cmsFloat2Half(cmsFloat32Number flt);
+
+// float16Number IO, as used by the ICC.2 singleSampledCurve and extendedCLUTElement
+// encodings. The conversion is done by the two functions above.
+CMSCHECKPOINT cmsBool          CMSEXPORT _cmsReadFloat16Number(cmsIOHANDLER* io, cmsFloat32Number* n);
 
 #endif
 

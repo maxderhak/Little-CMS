@@ -321,6 +321,27 @@ cmsBool CMSEXPORT  _cmsWriteFloat32Number(cmsIOHANDLER* io, cmsFloat32Number n)
     return TRUE;
 }
 
+#ifndef CMS_NO_HALF_SUPPORT
+
+// Reads a float16Number (IEEE 754 half precision), widened to float32. The conversion
+// itself lives in cmshalf.c, which is why this is guarded the same way; this only handles
+// IO and byte order.
+cmsBool CMSEXPORT  _cmsReadFloat16Number(cmsIOHANDLER* io, cmsFloat32Number* n)
+{
+    cmsUInt16Number tmp;
+
+    _cmsAssert(io != NULL);
+
+    if (io->Read(io, &tmp, sizeof(cmsUInt16Number), 1) != 1)
+        return FALSE;
+
+    if (n != NULL) *n = _cmsHalf2Float(_cmsAdjustEndianess16(tmp));
+
+    return TRUE;
+}
+
+#endif // CMS_NO_HALF_SUPPORT
+
 cmsBool CMSEXPORT  _cmsWriteUInt64Number(cmsIOHANDLER* io, cmsUInt64Number* n)
 {
     cmsUInt64Number tmp;

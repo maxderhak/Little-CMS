@@ -25,6 +25,7 @@
 //
 
 #include "testcms2.h"
+#include "iccmax_plugin.h"
 
 // A single check. Returns 1 if success, 0 if failed
 typedef cmsInt32Number (*TestFn)(void);
@@ -8937,6 +8938,256 @@ int CheckMixedRawAndCooked(void)
 }
 
 // --------------------------------------------------------------------------------------------------
+// iccMAX hybrid printer profile, read through the additive plug-in in iccmax_plugin.c
+// --------------------------------------------------------------------------------------------------
+
+// The five CMYK probes, and the 36 channel spectra the reference implementation produced for
+// them. Anything structurally wrong shows up immediately: probe 0 is paper white and runs high,
+// probe 4 is full ink and is near zero throughout.
+static const cmsFloat32Number IccMaxProbes[5][4] = {
+    { 0.00f, 0.00f, 0.00f, 0.00f },
+    { 1.00f, 0.00f, 0.00f, 0.00f },
+    { 0.00f, 1.00f, 0.00f, 0.00f },
+    { 0.25f, 0.50f, 0.75f, 0.10f },
+    { 1.00f, 1.00f, 1.00f, 1.00f }
+};
+
+// Generated from .superpowers/proto/reference-spectra.txt (in=4 out=36 stages=3)
+static const cmsFloat32Number IccMaxRefSpectra[5][36] = {
+    {   // probe0
+        0.2929276f, 0.3709240f, 0.4679439f, 0.6663543f, 0.9077541f, 0.9907959f,
+        1.0116463f, 0.9974605f, 0.9767422f, 0.9531693f, 0.9247534f, 0.9128669f,
+        0.9127701f, 0.9094005f, 0.8987640f, 0.8881438f, 0.8816637f, 0.8699823f,
+        0.8539683f, 0.8461291f, 0.8527368f, 0.8677824f, 0.8659822f, 0.8616500f,
+        0.8662838f, 0.8757783f, 0.8877137f, 0.8991268f, 0.9090596f, 0.9141900f,
+        0.9147208f, 0.9135690f, 0.9133502f, 0.9172938f, 0.9240705f, 0.9333206f
+    },
+    {   // probe1
+        0.0345664f, 0.1009541f, 0.2113304f, 0.3455611f, 0.5054943f, 0.5967795f,
+        0.6839734f, 0.7370061f, 0.7566810f, 0.7629314f, 0.7501994f, 0.7234785f,
+        0.6737970f, 0.5956329f, 0.5033320f, 0.4081887f, 0.3164465f, 0.2258462f,
+        0.1442154f, 0.0888721f, 0.0606101f, 0.0469313f, 0.0363803f, 0.0322824f,
+        0.0334416f, 0.0359058f, 0.0396013f, 0.0464831f, 0.0555806f, 0.0606139f,
+        0.0585166f, 0.0530398f, 0.0456608f, 0.0413264f, 0.0450885f, 0.0536892f
+    },
+    {   // probe2
+        0.0924950f, 0.1043180f, 0.1184553f, 0.1623446f, 0.2219182f, 0.2457077f,
+        0.2497651f, 0.2328198f, 0.2017549f, 0.1637608f, 0.1248001f, 0.0939942f,
+        0.0708692f, 0.0530988f, 0.0398723f, 0.0332962f, 0.0305455f, 0.0261016f,
+        0.0214182f, 0.0215623f, 0.0424635f, 0.1621272f, 0.3943283f, 0.5986882f,
+        0.7160150f, 0.7747337f, 0.8072045f, 0.8264009f, 0.8386866f, 0.8453560f,
+        0.8484667f, 0.8506796f, 0.8537504f, 0.8600910f, 0.8651944f, 0.8754671f
+    },
+    {   // probe3
+        0.0564298f, 0.0624071f, 0.0651020f, 0.0778184f, 0.0894463f, 0.0900276f,
+        0.0889638f, 0.0896391f, 0.0921698f, 0.0897101f, 0.0908471f, 0.1153274f,
+        0.1687052f, 0.2170245f, 0.2284843f, 0.2218038f, 0.2120839f, 0.1972413f,
+        0.1796975f, 0.1693392f, 0.1823460f, 0.2450278f, 0.3326657f, 0.3920923f,
+        0.4219982f, 0.4373448f, 0.4482769f, 0.4592558f, 0.4705271f, 0.4764826f,
+        0.4753209f, 0.4706054f, 0.4637735f, 0.4609043f, 0.4668912f, 0.4796714f
+    },
+    {   // probe4
+        0.0077016f, 0.0081355f, 0.0081876f, 0.0094068f, 0.0103703f, 0.0096422f,
+        0.0084763f, 0.0082187f, 0.0092294f, 0.0107793f, 0.0125781f, 0.0141579f,
+        0.0142598f, 0.0124173f, 0.0108171f, 0.0104262f, 0.0107774f, 0.0112208f,
+        0.0113665f, 0.0115907f, 0.0134799f, 0.0169455f, 0.0176213f, 0.0151352f,
+        0.0126922f, 0.0112629f, 0.0105230f, 0.0101616f, 0.0099594f, 0.0097949f,
+        0.0096366f, 0.0094369f, 0.0091956f, 0.0090372f, 0.0092252f, 0.0094883f
+    }
+};
+
+#define ICCMAX_SPECTRAL_TOLERANCE  1e-6
+
+// Change B must leave the ICC.1 path bit-identical: the parameter counts the deleted static
+// table held for ICC formula types 0, 1 and 2 have to come back unchanged from the collection
+// lookup, whether or not a plug-in is registered.
+static
+int CheckIccMaxFormulaParamCounts(cmsContext ctx, const char* Where)
+{
+    static const cmsUInt32Number Expected[3] = { 4, 5, 5 };   // ICC types 0, 1, 2 = lcms 6, 7, 8
+    cmsUInt32Number n;
+    int i;
+
+    for (i = 0; i < 3; i++) {
+
+        if (!_cmsGetFormulaCurveSegmentParams(ctx, 6 + i, &n)) {
+
+            Fail("%s: no collection claims lcms parametric type %d", Where, 6 + i);
+            return 0;
+        }
+
+        if (n != Expected[i]) {
+
+            Fail("%s: ICC formula type %d gave %u parameters, expected %u",
+                 Where, i, n, Expected[i]);
+            return 0;
+        }
+    }
+
+    // A negative type must never resolve, even though IsInSet matches on abs(Type): no ICC
+    // encoding can express the analytic inverse of a curve.
+    if (_cmsGetFormulaCurveSegmentParams(ctx, -6, &n)) {
+
+        Fail("%s: a negative parametric type resolved to a parameter count", Where);
+        return 0;
+    }
+
+    // The built-in types that are not formula segment types must stay rejected, or the
+    // "lcms type = ICC type + 6" convention would write lcms 108 out as ICC function type
+    // 102 and read it straight back, which master's hard cap of 2 prevented.
+    for (i = 1; i <= 5; i++) {
+
+        if (_cmsGetFormulaCurveSegmentParams(ctx, i, &n)) {
+
+            Fail("%s: lcms parametric type %d is an ICC.1 'para' function, not a formula "
+                 "segment type, but it resolved", Where, i);
+            return 0;
+        }
+    }
+
+    if (_cmsGetFormulaCurveSegmentParams(ctx, 108, &n) ||
+        _cmsGetFormulaCurveSegmentParams(ctx, 109, &n)) {
+
+        Fail("%s: the lcms-private S-shaped types 108/109 resolved as formula segments", Where);
+        return 0;
+    }
+
+    return 1;
+}
+
+static
+int CheckIccMaxHybridPrinter(void)
+{
+    cmsContext ctx = NULL;
+    cmsHPROFILE hOuter = NULL;
+    cmsHPROFILE hEmbedded = NULL;
+    const cmsICCData* Embedded;
+    cmsPipeline* Lut;
+    cmsFloat32Number Out[36];
+    cmsUInt32Number nParams;
+    int probe, ch;
+    int rc = 0;
+
+    // First check the built-in path is untouched with no plug-in anywhere
+    if (!CheckIccMaxFormulaParamCounts(DbgThread(), "no plug-in")) return 0;
+
+    // A context of its own, so the iccMAX handlers are an opt-in of this test alone and every
+    // other check in this suite still runs against an unextended library. WatchDogContext
+    // keeps the debug memory handler, so a leak in anything below is still caught.
+    //
+    // Not cmsDupContext(DbgThread(), NULL), which would be the more direct way to inherit the
+    // suite's settings: cmsDupContext crashes for any non-NULL ContextID that is not a live
+    // context, because it copies globalContext.DefaultMemoryManager -- all NULLs by design --
+    // into the new context and then allocates through it. Only ContextID == NULL is
+    // special-cased. That is a pre-existing defect in master and not this test's to work around.
+    ctx = WatchDogContext(NULL);
+    if (ctx == NULL) {
+        Fail("Could not create a context for the iccMAX plug-in");
+        return 0;
+    }
+
+    if (!cmsPluginTHR(ctx, cmsGetIccMaxPlugin())) {
+        Fail("Could not register the iccMAX plug-in");
+        goto Done;
+    }
+
+    // Reading is expected to succeed here, so a signalled error must not be fatal: the testbed
+    // installs FatalErrorQuit globally, which would exit the whole run and make Fail below
+    // unreachable. Restored on every exit path.
+    cmsSetLogErrorHandler(ErrorReportingFunction);
+
+    // The plug-in's five formula types are now visible, and the three ICC.1 ones must be
+    // exactly as they were
+    if (!CheckIccMaxFormulaParamCounts(ctx, "with plug-in")) goto Done;
+
+    if (!_cmsGetFormulaCurveSegmentParams(ctx, 9, &nParams) || nParams != 5) {
+        Fail("The plug-in's formula type 3 (lcms 9) did not resolve to 5 parameters");
+        goto Done;
+    }
+
+    hOuter = cmsOpenProfileFromFileTHR(ctx, "HybridPrinterCMYK_small.icc", "r");
+    if (hOuter == NULL) {
+        Fail("Could not open HybridPrinterCMYK_small.icc");
+        goto Done;
+    }
+
+    // The embedded ICC.2 profile, through the plug-in's 'ICC5' tag and 'ICCp' tag type
+    Embedded = (const cmsICCData*) cmsReadTag(hOuter, ICCMAX_SigEmbeddedV5Tag);
+    if (Embedded == NULL) {
+        Fail("Could not read the ICC5 tag");
+        goto Done;
+    }
+
+    if (Embedded ->len < 132) {
+        Fail("The ICC5 tag came back with an implausible length of %u", Embedded ->len);
+        goto Done;
+    }
+
+    hEmbedded = cmsOpenProfileFromMemTHR(ctx, Embedded ->data, Embedded ->len);
+    if (hEmbedded == NULL) {
+        Fail("Could not open the embedded ICC.2 profile");
+        goto Done;
+    }
+
+    // The spectral transform. 'cvst' with four singleSampledCurves, then a 4 -> 8 'xclt',
+    // then an 8 -> 36 'matf'.
+    Lut = (cmsPipeline*) cmsReadTag(hEmbedded, cmsSigDToB3Tag);
+    if (Lut == NULL) {
+        Fail("Could not read DToB3 from the embedded profile");
+        goto Done;
+    }
+
+    if (cmsPipelineInputChannels(Lut) != 4 || cmsPipelineOutputChannels(Lut) != 36) {
+        Fail("DToB3 is %u -> %u, expected 4 -> 36",
+             cmsPipelineInputChannels(Lut), cmsPipelineOutputChannels(Lut));
+        goto Done;
+    }
+
+    if (cmsPipelineStageCount(Lut) != 3) {
+        Fail("DToB3 has %u stages, expected 3", cmsPipelineStageCount(Lut));
+        goto Done;
+    }
+
+    for (probe = 0; probe < 5; probe++) {
+
+        memset(Out, 0, sizeof(Out));
+        cmsPipelineEvalFloat(IccMaxProbes[probe], Out, Lut);
+
+        for (ch = 0; ch < 36; ch++) {
+
+            cmsFloat64Number got = Out[ch];
+            cmsFloat64Number want = IccMaxRefSpectra[probe][ch];
+
+            // NaN has to be tested for on its own: fabs(NaN - want) > tol is FALSE, so a NaN
+            // would slip through the tolerance check below without a sound.
+            if (got != got) {
+
+                Fail("probe %d channel %d came back NaN", probe, ch);
+                goto Done;
+            }
+
+            if (fabs(got - want) > ICCMAX_SPECTRAL_TOLERANCE) {
+
+                Fail("probe %d channel %d: got %.7f, expected %.7f (delta %g)",
+                     probe, ch, got, want, fabs(got - want));
+                goto Done;
+            }
+        }
+    }
+
+    rc = 1;
+
+Done:
+    cmsSetLogErrorHandler(FatalErrorQuit);
+
+    if (hEmbedded != NULL) cmsCloseProfile(hEmbedded);
+    if (hOuter != NULL) cmsCloseProfile(hOuter);
+    if (ctx != NULL) cmsDeleteContext(ctx);
+
+    return rc;
+}
+
+// --------------------------------------------------------------------------------------------------
 // P E R F O R M A N C E   C H E C K S
 // --------------------------------------------------------------------------------------------------
 
@@ -9882,6 +10133,7 @@ int main(int argc, char* argv[])
     Check("Saving linearization devicelink", CheckSaveLinearizationDevicelink);
     Check("Gamut check on floats", CheckGamutCheckFloats);
     Check("Mixing RAW and Cooked tags", CheckMixedRawAndCooked);
+    Check("iccMAX hybrid printer spectra via plug-in", CheckIccMaxHybridPrinter);
     }
 
     if (DoPluginTests)
