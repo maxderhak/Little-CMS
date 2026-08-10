@@ -9201,6 +9201,323 @@ Done:
 }
 
 // --------------------------------------------------------------------------------------------------
+// spectralWhitePointTag ('swpt') and the float16/float32 array types it can be encoded in,
+// via the plug-in in iccmax_plugin.c
+// --------------------------------------------------------------------------------------------------
+
+#define ICCMAX_SWPT_N_VALUES  36
+
+static
+int CheckIccMaxSpectralWhitePoint(void)
+{
+    cmsContext ctx = NULL;
+    cmsHPROFILE hOuter = NULL;
+    cmsHPROFILE hEmbedded = NULL;
+    cmsHPROFILE h = NULL;
+    const cmsICCData* Embedded;
+    const IccMaxFloatArray* Fixture;
+    IccMaxFloatArray* Src = NULL;
+    IccMaxFloatArray* Rt = NULL;
+    IccMaxFloatArray* Out = NULL;
+    cmsUInt8Number TypeBytes[4];
+    cmsUInt32Number OnDiskType;
+    cmsUInt32Number i, enc;
+    int rc = 0;
+
+    // fl32 first, matching this project's own DecideType-less "writes always pick the first
+    // (lossless) entry" convention, then fl16, then the core's own uInt16ArrayType -- the
+    // three encodings ICC.2 9.2.112 permits for this tag.
+    static const cmsTagTypeSignature Encodings[3] = {
+        IccMaxSigFloat32ArrayType, IccMaxSigFloat16ArrayType, cmsSigUInt16ArrayType
+    };
+    // fl32 is bit-exact; fl16 loses precision to half-float rounding; ui16's quantum is
+    // 1/65535 = 1.53e-5, so 2e-5 is just above it and would fail if the ui16 mapping broke.
+    static const cmsFloat64Number Tolerances[3] = { 1E-6, 1E-3, 2E-5 };
+
+    ctx = WatchDogContext(NULL);
+    if (ctx == NULL) {
+        Fail("Could not create a context for the iccMAX plug-in");
+        return 0;
+    }
+
+    if (!cmsPluginTHR(ctx, cmsGetIccMaxPlugin())) {
+        Fail("Could not register the iccMAX plug-in");
+        goto Done;
+    }
+
+    // Everything through item 4 below is expected to succeed, so a signalled error must not
+    // be fatal -- restored at Done on every exit path.
+    cmsSetLogErrorHandler(ErrorReportingFunction);
+
+    // --- 1. Against the fixture: reference bytes, not our writer ---
+
+    hOuter = cmsOpenProfileFromFileTHR(ctx, "HybridPrinterCMYK_small.icc", "r");
+    if (hOuter == NULL) {
+        Fail("Could not open HybridPrinterCMYK_small.icc");
+        goto Done;
+    }
+
+    Embedded = (const cmsICCData*) cmsReadTag(hOuter, ICCMAX_SigEmbeddedV5Tag);
+    if (Embedded == NULL) {
+        Fail("Could not read the ICC5 tag");
+        goto Done;
+    }
+
+    hEmbedded = cmsOpenProfileFromMemTHR(ctx, Embedded ->data, Embedded ->len);
+    if (hEmbedded == NULL) {
+        Fail("Could not open the embedded ICC.2 profile");
+        goto Done;
+    }
+
+    Fixture = (const IccMaxFloatArray*) cmsReadTag(hEmbedded, IccMaxSigSpectralWhitePointTag);
+    if (Fixture == NULL) {
+        Fail("Could not read swpt from the fixture");
+        goto Done;
+    }
+
+    if (Fixture ->nValues != ICCMAX_SWPT_N_VALUES) {
+        Fail("Fixture swpt has %u values, expected %u", Fixture ->nValues,
+             (cmsUInt32Number) ICCMAX_SWPT_N_VALUES);
+        goto Done;
+    }
+
+    // NaN has to be tested for on its own: fabs(NaN - want) > tol is FALSE, so a NaN would
+    // slip through the tolerance check without a sound.
+    if (isnan(Fixture ->Values[0]) || fabs(Fixture ->Values[0] - 0.27557) > 1E-4) {
+        Fail("Fixture swpt Values[0] = %.7f, expected ~0.27557", Fixture ->Values[0]);
+        goto Done;
+    }
+
+    // --- 2. Round trip via cmsReadTag / cmsWriteTag, fl32 is lossless ---
+    //
+    // Synthetic data spanning [0, 1] rather than the fixture's own values: the fixture's
+    // spectrum peaks above 1.0 (physically ordinary for a reflectance curve, but it would
+    // make item 3 below exercise ui16's clamp instead of its round trip, which is item 4's
+    // job, not this one's).
+
+    Src = IccMaxAllocFloatArray(ctx, ICCMAX_SWPT_N_VALUES);
+    if (Src == NULL) {
+        Fail("Could not allocate the source float array");
+        goto Done;
+    }
+
+    for (i = 0; i < ICCMAX_SWPT_N_VALUES; i++)
+        Src ->Values[i] = (cmsFloat32Number) i / (cmsFloat32Number) (ICCMAX_SWPT_N_VALUES - 1);
+
+    h = cmsOpenProfileFromFileTHR(ctx, "swpt_roundtrip.icc", "w");
+    if (h == NULL) {
+        Fail("Could not create swpt_roundtrip.icc");
+        goto Done;
+    }
+
+    cmsSetProfileVersion(h, 5.0);
+
+    if (!cmsWriteTag(h, IccMaxSigSpectralWhitePointTag, (void*) Src)) {
+        Fail("cmsWriteTag failed writing swpt");
+        goto Done;
+    }
+
+    cmsCloseProfile(h);
+    h = cmsOpenProfileFromFileTHR(ctx, "swpt_roundtrip.icc", "r");
+    if (h == NULL) {
+        Fail("Could not reopen swpt_roundtrip.icc");
+        goto Done;
+    }
+
+    Rt = (IccMaxFloatArray*) cmsReadTag(h, IccMaxSigSpectralWhitePointTag);
+    if (Rt == NULL) {
+        Fail("Could not reread swpt after the round trip");
+        goto Done;
+    }
+
+    if (Rt ->nValues != ICCMAX_SWPT_N_VALUES) {
+        Fail("Round trip swpt has %u values, expected %u", Rt ->nValues,
+             (cmsUInt32Number) ICCMAX_SWPT_N_VALUES);
+        goto Done;
+    }
+
+    for (i = 0; i < ICCMAX_SWPT_N_VALUES; i++) {
+
+        if (isnan(Rt ->Values[i])) {
+            Fail("Round trip swpt value %u came back NaN", i);
+            goto Done;
+        }
+
+        if (Rt ->Values[i] != Src ->Values[i]) {
+            Fail("swpt fl32 round trip value %u changed: got %.9g, expected %.9g",
+                 i, Rt ->Values[i], Src ->Values[i]);
+            goto Done;
+        }
+    }
+
+    cmsCloseProfile(h);
+    h = NULL;
+    remove("swpt_roundtrip.icc");
+
+    // --- 3. Round trip via the accessors, in all three encodings ---
+
+    for (enc = 0; enc < 3; enc++) {
+
+        h = cmsCreateProfilePlaceholder(ctx);
+        if (h == NULL) {
+            Fail("Could not create a placeholder profile for encoding %u", enc);
+            goto Done;
+        }
+
+        if (!IccMaxWriteSpectralWhitePoint(h, Src, Encodings[enc])) {
+            Fail("IccMaxWriteSpectralWhitePoint failed for encoding %u", enc);
+            goto Done;
+        }
+
+        if (cmsReadRawTag(h, IccMaxSigSpectralWhitePointTag, TypeBytes, 4) != 4) {
+            Fail("Could not read back the on-disk type signature for encoding %u", enc);
+            goto Done;
+        }
+
+        OnDiskType = _cmsAdjustEndianess32(*(cmsUInt32Number*) TypeBytes);
+        if (OnDiskType != (cmsUInt32Number) Encodings[enc]) {
+            Fail("swpt on-disk type is '%x', expected '%x' for encoding %u",
+                 OnDiskType, (cmsUInt32Number) Encodings[enc], enc);
+            goto Done;
+        }
+
+        if (!IccMaxReadSpectralWhitePoint(h, &Out)) {
+            Fail("IccMaxReadSpectralWhitePoint failed for encoding %u", enc);
+            goto Done;
+        }
+
+        if (Out ->nValues != ICCMAX_SWPT_N_VALUES) {
+            Fail("Accessor round trip swpt has %u values, expected %u for encoding %u",
+                 Out ->nValues, (cmsUInt32Number) ICCMAX_SWPT_N_VALUES, enc);
+            IccMaxFreeFloatArray(Out); Out = NULL;
+            goto Done;
+        }
+
+        for (i = 0; i < ICCMAX_SWPT_N_VALUES; i++) {
+
+            if (isnan(Out ->Values[i])) {
+                Fail("Accessor round trip value %u came back NaN for encoding %u", i, enc);
+                IccMaxFreeFloatArray(Out); Out = NULL;
+                goto Done;
+            }
+
+            if (fabs(Out ->Values[i] - Src ->Values[i]) > Tolerances[enc]) {
+                Fail("swpt encoding %u value %u changed: got %.9g, expected %.9g (delta %g)",
+                     enc, i, Out ->Values[i], Src ->Values[i],
+                     fabs(Out ->Values[i] - Src ->Values[i]));
+                IccMaxFreeFloatArray(Out); Out = NULL;
+                goto Done;
+            }
+        }
+
+        IccMaxFreeFloatArray(Out);
+        Out = NULL;
+
+        cmsCloseProfile(h);
+        h = NULL;
+    }
+
+    // --- 4. Degenerate ui16 write cases ---
+    {
+        IccMaxFloatArray* Deg = NULL;
+        IccMaxFloatArray* DegOut = NULL;
+        cmsFloat32Number NaNVal, NegInf, PosInf;
+        cmsUInt32Number j;
+        // sqrt(-1.0) and log(0.0) rather than literal division, so the special values are
+        // computed at run time and the compiler cannot constant-fold (or warn about) them.
+        static const cmsFloat32Number Expected[5] = { 0.0f, 1.0f, 0.0f, 1.0f, 0.0f };
+
+        NaNVal = (cmsFloat32Number) sqrt(-1.0);
+        NegInf = (cmsFloat32Number) log(0.0);
+        PosInf = (cmsFloat32Number) (-log(0.0));
+
+        Deg = IccMaxAllocFloatArray(ctx, 5);
+        if (Deg == NULL) {
+            Fail("Could not allocate the degenerate float array");
+            goto Done;
+        }
+
+        Deg ->Values[0] = NaNVal;      // NaN  -> 0
+        Deg ->Values[1] = PosInf;      // +Inf -> 1.0
+        Deg ->Values[2] = NegInf;      // -Inf -> 0
+        Deg ->Values[3] = 2.0f;        // > 1  -> 1.0
+        Deg ->Values[4] = -1.0f;       // < 0  -> 0
+
+        h = cmsCreateProfilePlaceholder(ctx);
+        if (h == NULL) {
+            Fail("Could not create a placeholder profile for the degenerate case");
+            IccMaxFreeFloatArray(Deg);
+            goto Done;
+        }
+
+        if (!IccMaxWriteSpectralWhitePoint(h, Deg, cmsSigUInt16ArrayType)) {
+            Fail("IccMaxWriteSpectralWhitePoint failed for the degenerate ui16 case");
+            IccMaxFreeFloatArray(Deg);
+            goto Done;
+        }
+
+        IccMaxFreeFloatArray(Deg);
+
+        if (!IccMaxReadSpectralWhitePoint(h, &DegOut)) {
+            Fail("IccMaxReadSpectralWhitePoint failed reading back the degenerate ui16 case");
+            goto Done;
+        }
+
+        for (j = 0; j < 5; j++) {
+
+            if (isnan(DegOut ->Values[j])) {
+                Fail("Degenerate ui16 value %u came back NaN, expected %.1f",
+                     j, Expected[j]);
+                IccMaxFreeFloatArray(DegOut);
+                goto Done;
+            }
+
+            if (DegOut ->Values[j] != Expected[j]) {
+                Fail("Degenerate ui16 value %u = %.7f, expected %.1f",
+                     j, DegOut ->Values[j], Expected[j]);
+                IccMaxFreeFloatArray(DegOut);
+                goto Done;
+            }
+        }
+
+        IccMaxFreeFloatArray(DegOut);
+    }
+
+    // --- 5. Rejection: cmsSigUInt8ArrayType has a core handler, so the refusal has to come
+    // from the accessor's own check rather than from anything cmsSignalError would make
+    // fatal. This call is *expected* to signal an error, so nothing sits between installing
+    // the non-fatal handler and restoring it -- no goto, return or Fail() in between; the
+    // pass/fail decision is made strictly after the handler is back to FatalErrorQuit.
+    {
+        cmsBool Accepted;
+
+        cmsSetLogErrorHandler(ErrorReportingFunction);
+        Accepted = IccMaxWriteSpectralWhitePoint(h, Src, cmsSigUInt8ArrayType);
+        cmsSetLogErrorHandler(FatalErrorQuit);
+
+        if (Accepted) {
+            Fail("IccMaxWriteSpectralWhitePoint accepted cmsSigUInt8ArrayType, which has a "
+                 "core handler but must still be refused by the accessor's own check");
+            goto Done;
+        }
+    }
+
+    rc = 1;
+
+Done:
+    cmsSetLogErrorHandler(FatalErrorQuit);
+
+    if (Src != NULL) IccMaxFreeFloatArray(Src);
+    if (h != NULL) cmsCloseProfile(h);
+    if (hEmbedded != NULL) cmsCloseProfile(hEmbedded);
+    if (hOuter != NULL) cmsCloseProfile(hOuter);
+    if (ctx != NULL) cmsDeleteContext(ctx);
+    remove("swpt_roundtrip.icc");
+
+    return rc;
+}
+
+// --------------------------------------------------------------------------------------------------
 // P E R F O R M A N C E   C H E C K S
 // --------------------------------------------------------------------------------------------------
 
@@ -10147,6 +10464,7 @@ int main(int argc, char* argv[])
     Check("Gamut check on floats", CheckGamutCheckFloats);
     Check("Mixing RAW and Cooked tags", CheckMixedRawAndCooked);
     Check("iccMAX hybrid printer spectra via plug-in", CheckIccMaxHybridPrinter);
+    Check("iccMAX spectral white point tag via plug-in", CheckIccMaxSpectralWhitePoint);
     }
 
     if (DoPluginTests)

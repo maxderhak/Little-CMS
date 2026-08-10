@@ -35,6 +35,10 @@
 //   'ICC5'  the tag that carries it, a new tag
 //   lcms parametric curve types 9 to 13, being ICC.2 formulaCurveSegment function
 //           types 3 to 7, which ICC.1 does not define
+//   'fl16'  float16ArrayType, a new tag type
+//   'fl32'  float32ArrayType, a new tag type
+//   'swpt'  spectralWhitePointTag, the tag that carries either of the above (or the core's
+//           own 'ui16'), a new tag
 //
 // Nothing here re-implements 'cvst', 'clut', 'matf', 'mpet', 'curf', 'parf', 'samf' or
 // 'sngf'. Those are read by the library, and this plug-in inherits every fix made to them.
@@ -452,11 +456,354 @@ cmsFloat64Number IccMaxEvalCurve(cmsInt32Number Type, const cmsFloat64Number Par
 
 
 // ********************************************************************************
+// Type float16ArrayType and float32ArrayType -- ICC.2:2023 10.2.9 and 10.2.10
+// ********************************************************************************
+//
+// Both are the type signature, four reserved bytes, then a bare vector of values; ICC.2
+// derives the count from the tag size. The framework has already consumed the signature and
+// the reserved bytes by the time a reader is called, so SizeOfTag counts the values only.
+
+static
+void* ReadFloatArray(struct _cms_typehandler_struct* self, cmsIOHANDLER* io,
+                     cmsUInt32Number* nItems, cmsUInt32Number SizeOfTag,
+                     cmsUInt32Number BytesPerValue)
+{
+    IccMaxFloatArray* v;
+    cmsUInt32Number i, n;
+
+    *nItems = 0;
+
+    n = SizeOfTag / BytesPerValue;
+    if (n == 0) return NULL;
+
+    v = IccMaxAllocFloatArray(self ->ContextID, n);
+    if (v == NULL) return NULL;
+
+    for (i = 0; i < n; i++) {
+
+        if (BytesPerValue == 2) {
+
+            if (!_cmsReadFloat16Number(io, &v ->Values[i])) goto Error;
+        }
+        else {
+
+            if (!_cmsReadFloat32Number(io, &v ->Values[i])) goto Error;
+        }
+    }
+
+    *nItems = 1;
+    return (void*) v;
+
+Error:
+    IccMaxFreeFloatArray(v);
+    return NULL;
+}
+
+// There is no core _cmsWriteFloat16Number to call, so this writes the half directly through
+// the exported conversion and endian-swap helpers -- the same two calls _cmsReadFloat16Number
+// makes in reverse.
+static
+cmsBool WriteFloat16Number(cmsIOHANDLER* io, cmsFloat32Number v)
+{
+    cmsUInt16Number h = _cmsAdjustEndianess16(_cmsFloat2Half(v));
+
+    return io ->Write(io, sizeof(cmsUInt16Number), &h);
+}
+
+static
+cmsBool WriteFloatArray(cmsIOHANDLER* io, void* Ptr, cmsUInt32Number BytesPerValue)
+{
+    IccMaxFloatArray* v = (IccMaxFloatArray*) Ptr;
+    cmsUInt32Number i;
+
+    if (v == NULL || v ->Values == NULL) return FALSE;
+
+    // The length comes from the object. nItems is TagDescriptor->ElemCount, which for swpt
+    // is the constant 1 and has nothing to do with the value count.
+    for (i = 0; i < v ->nValues; i++) {
+
+        if (BytesPerValue == 2) {
+
+            if (!WriteFloat16Number(io, v ->Values[i])) return FALSE;
+        }
+        else {
+
+            if (!_cmsWriteFloat32Number(io, v ->Values[i])) return FALSE;
+        }
+    }
+
+    return TRUE;
+}
+
+static
+void* Type_FloatArray_Dup(struct _cms_typehandler_struct* self, const void* Ptr, cmsUInt32Number n)
+{
+    const IccMaxFloatArray* v = (const IccMaxFloatArray*) Ptr;
+    IccMaxFloatArray* NewArray;
+
+    if (v == NULL) return NULL;
+
+    // Again, the length is v->nValues and not n
+    NewArray = IccMaxAllocFloatArray(self ->ContextID, v ->nValues);
+    if (NewArray == NULL) return NULL;
+
+    memcpy(NewArray ->Values, v ->Values, v ->nValues * sizeof(cmsFloat32Number));
+
+    return (void*) NewArray;
+
+    cmsUNUSED_PARAMETER(n);
+}
+
+static
+void Type_FloatArray_Free(struct _cms_typehandler_struct* self, void* Ptr)
+{
+    IccMaxFreeFloatArray((IccMaxFloatArray*) Ptr);
+
+    cmsUNUSED_PARAMETER(self);
+}
+
+#define Type_Float16Array_Dup  Type_FloatArray_Dup
+#define Type_Float16Array_Free Type_FloatArray_Free
+#define Type_Float32Array_Dup  Type_FloatArray_Dup
+#define Type_Float32Array_Free Type_FloatArray_Free
+
+static
+void* Type_Float16Array_Read(struct _cms_typehandler_struct* self, cmsIOHANDLER* io,
+                             cmsUInt32Number* nItems, cmsUInt32Number SizeOfTag)
+{
+    return ReadFloatArray(self, io, nItems, SizeOfTag, 2);
+}
+
+static
+cmsBool Type_Float16Array_Write(struct _cms_typehandler_struct* self, cmsIOHANDLER* io,
+                                void* Ptr, cmsUInt32Number nItems)
+{
+    return WriteFloatArray(io, Ptr, 2);
+
+    cmsUNUSED_PARAMETER(self);
+    cmsUNUSED_PARAMETER(nItems);
+}
+
+static
+void* Type_Float32Array_Read(struct _cms_typehandler_struct* self, cmsIOHANDLER* io,
+                             cmsUInt32Number* nItems, cmsUInt32Number SizeOfTag)
+{
+    return ReadFloatArray(self, io, nItems, SizeOfTag, 4);
+}
+
+static
+cmsBool Type_Float32Array_Write(struct _cms_typehandler_struct* self, cmsIOHANDLER* io,
+                                void* Ptr, cmsUInt32Number nItems)
+{
+    return WriteFloatArray(io, Ptr, 4);
+
+    cmsUNUSED_PARAMETER(self);
+    cmsUNUSED_PARAMETER(nItems);
+}
+
+
+// ********************************************************************************
+// spectralWhitePointTag ('swpt') accessors -- ICC.2:2023 9.2.112
+// ********************************************************************************
+//
+// swpt permits three encodings: fl32, fl16, and the core's own uInt16ArrayType. The 1/65535
+// normalisation for the ui16 case belongs to this tag, per ICC.2 9.2.112, not to the generic
+// ui16 signature -- which is why ui16 is not registered as a type handler above and these
+// accessors work over cmsReadRawTag / cmsWriteRawTag instead, dispatching on the tag's own
+// 4-byte type signature so they can cover all three.
+//
+// cmsReadRawTag / cmsWriteRawTag buffers include the 8-byte type-signature-plus-reserved
+// prefix that a registered handler never sees, so every value offset here is
+// 8 + i * BytesPerValue -- unlike ReadFloatArray/WriteFloatArray above.
+
+IccMaxFloatArray* IccMaxAllocFloatArray(cmsContext ContextID, cmsUInt32Number nValues)
+{
+    IccMaxFloatArray* v;
+
+    // An ICC.2 spectral PCS signature carries its channel count in 16 bits, so this is
+    // the largest array the tag can legitimately describe.
+    if (nValues == 0 || nValues > 0xFFFF) return NULL;
+
+    v = (IccMaxFloatArray*) _cmsMallocZero(ContextID, sizeof(IccMaxFloatArray));
+    if (v == NULL) return NULL;
+
+    // Set ContextID before anything can fail, so every free path uses the allocator the
+    // memory came from
+    v ->ContextID = ContextID;
+
+    v ->Values = (cmsFloat32Number*) _cmsCalloc(ContextID, nValues, sizeof(cmsFloat32Number));
+    if (v ->Values == NULL) {
+
+        _cmsFree(ContextID, v);
+        return NULL;
+    }
+
+    v ->nValues = nValues;
+    return v;
+}
+
+void IccMaxFreeFloatArray(IccMaxFloatArray* v)
+{
+    if (v == NULL) return;
+
+    if (v ->Values != NULL) _cmsFree(v ->ContextID, v ->Values);
+
+    _cmsFree(v ->ContextID, v);
+}
+
+cmsBool IccMaxReadSpectralWhitePoint(cmsHPROFILE hProfile, IccMaxFloatArray** Out)
+{
+    cmsUInt8Number* Raw = NULL;
+    IccMaxFloatArray* v = NULL;
+    cmsUInt32Number Size, Type, n, i, BytesPerValue;
+
+    if (Out == NULL) return FALSE;
+    *Out = NULL;
+
+    Size = cmsReadRawTag(hProfile, IccMaxSigSpectralWhitePointTag, NULL, 0);
+    if (Size < 12) return FALSE;                 // 8 byte prefix plus at least one value
+
+    Raw = (cmsUInt8Number*) _cmsMalloc(cmsGetProfileContextID(hProfile), Size);
+    if (Raw == NULL) return FALSE;
+
+    if (cmsReadRawTag(hProfile, IccMaxSigSpectralWhitePointTag, Raw, Size) != Size) goto Error;
+
+    // Bytes 0..3 are the type signature, 4..7 reserved, the values follow
+    Type = _cmsAdjustEndianess32(*(cmsUInt32Number*) Raw);
+
+    switch (Type) {
+
+        case IccMaxSigFloat32ArrayType: BytesPerValue = 4; break;
+        case IccMaxSigFloat16ArrayType: BytesPerValue = 2; break;
+        case cmsSigUInt16ArrayType:     BytesPerValue = 2; break;
+
+        default:
+            cmsSignalError(cmsGetProfileContextID(hProfile), cmsERROR_UNKNOWN_EXTENSION,
+                "swpt has type '%x', which ICC.2 9.2.112 does not permit", Type);
+            goto Error;
+    }
+
+    n = (Size - 8) / BytesPerValue;
+    if (n == 0) goto Error;
+
+    v = IccMaxAllocFloatArray(cmsGetProfileContextID(hProfile), n);
+    if (v == NULL) goto Error;
+
+    for (i = 0; i < n; i++) {
+
+        cmsUInt8Number* p = Raw + 8 + i * BytesPerValue;
+
+        if (Type == IccMaxSigFloat32ArrayType) {
+
+            cmsUInt32Number bits = _cmsAdjustEndianess32(*(cmsUInt32Number*) p);
+            memcpy(&v ->Values[i], &bits, sizeof(cmsFloat32Number));
+        }
+        else if (Type == IccMaxSigFloat16ArrayType) {
+
+            v ->Values[i] = _cmsHalf2Float(_cmsAdjustEndianess16(*(cmsUInt16Number*) p));
+        }
+        else {
+
+            // ui16 is 0 to 65535 mapped onto 0.0 to 1.0, per ICC.2 9.2.112
+            v ->Values[i] = (cmsFloat32Number)
+                (_cmsAdjustEndianess16(*(cmsUInt16Number*) p) / 65535.0);
+        }
+    }
+
+    _cmsFree(cmsGetProfileContextID(hProfile), Raw);
+    *Out = v;
+    return TRUE;
+
+Error:
+    if (v != NULL) IccMaxFreeFloatArray(v);
+    if (Raw != NULL) _cmsFree(cmsGetProfileContextID(hProfile), Raw);
+    return FALSE;
+}
+
+cmsBool IccMaxWriteSpectralWhitePoint(cmsHPROFILE hProfile,
+                                      const IccMaxFloatArray* In,
+                                      cmsTagTypeSignature AsType)
+{
+    cmsUInt8Number* Raw = NULL;
+    cmsUInt32Number Size, i, BytesPerValue;
+    cmsBool rc;
+
+    if (In == NULL || In ->Values == NULL || In ->nValues == 0) return FALSE;
+
+    // IccMaxAllocFloatArray caps nValues at 0xFFFF, but IccMaxFloatArray is a public struct
+    // and nothing stops a caller from populating one by hand and setting nValues past that
+    // bound. Without this guard, "8 + In->nValues * BytesPerValue" below can wrap a 32 bit
+    // Size to a tiny value, so the allocation would succeed far too small and the write loop
+    // would then walk off the end of it. Checked before Size is computed, not after.
+    if (In ->nValues > 0xFFFF) return FALSE;
+
+    // Switched as a plain integer, not as AsType's own enum type: two of the three case
+    // values are this plug-in's own signatures, which are not (and must not become) members
+    // of the core's cmsTagTypeSignature enum, and gcc's -Wswitch flags a case value that is
+    // not one of the switched-on enum's enumerators.
+    switch ((cmsUInt32Number) AsType) {
+
+        case IccMaxSigFloat32ArrayType: BytesPerValue = 4; break;
+        case IccMaxSigFloat16ArrayType: BytesPerValue = 2; break;
+        case cmsSigUInt16ArrayType:     BytesPerValue = 2; break;
+
+        default:
+            cmsSignalError(cmsGetProfileContextID(hProfile), cmsERROR_UNKNOWN_EXTENSION,
+                "ICC.2 9.2.112 does not permit type '%x' for swpt", AsType);
+            return FALSE;
+    }
+
+    Size = 8 + In ->nValues * BytesPerValue;
+
+    Raw = (cmsUInt8Number*) _cmsMallocZero(cmsGetProfileContextID(hProfile), Size);
+    if (Raw == NULL) return FALSE;
+
+    *(cmsUInt32Number*) Raw = _cmsAdjustEndianess32((cmsUInt32Number) AsType);
+    // Bytes 4..7 stay zero: ICC.2 requires the reserved field to be 0
+
+    for (i = 0; i < In ->nValues; i++) {
+
+        cmsUInt8Number* p = Raw + 8 + i * BytesPerValue;
+
+        if (AsType == IccMaxSigFloat32ArrayType) {
+
+            cmsUInt32Number bits;
+            memcpy(&bits, &In ->Values[i], sizeof(cmsUInt32Number));
+            *(cmsUInt32Number*) p = _cmsAdjustEndianess32(bits);
+        }
+        else if (AsType == IccMaxSigFloat16ArrayType) {
+
+            *(cmsUInt16Number*) p = _cmsAdjustEndianess16(_cmsFloat2Half(In ->Values[i]));
+        }
+        else {
+
+            // ui16 is 0 to 65535 mapped onto 0.0 to 1.0, per ICC.2 9.2.112: NaN becomes 0,
+            // the value is clamped to 0.0 .. 1.0 (which also catches +/- infinity), then
+            // scaled and rounded.
+            cmsFloat64Number x = In ->Values[i];
+
+            if (isnan(x)) x = 0.0;
+            else if (x > 1.0) x = 1.0;
+            else if (x < 0.0) x = 0.0;
+
+            *(cmsUInt16Number*) p =
+                _cmsAdjustEndianess16((cmsUInt16Number) floor(x * 65535.0 + 0.5));
+        }
+    }
+
+    rc = cmsWriteRawTag(hProfile, IccMaxSigSpectralWhitePointTag, Raw, Size);
+
+    _cmsFree(cmsGetProfileContextID(hProfile), Raw);
+    return rc;
+}
+
+
+// ********************************************************************************
 // The plug-in list
 // ********************************************************************************
 //
 // Chained back to front so that cmsGetIccMaxPlugin can return a single head. Every entry
-// is an addition: none of these four signatures is handled by the library.
+// is an addition: none of these seven signatures is handled by the library.
 
 static cmsPluginParametricCurves IccMaxCurvesPlugin = {
 
@@ -495,7 +842,37 @@ static cmsPluginMultiProcessElement IccMaxExtClutPlugin = {
       MPEextclut_Dup, MPEextclut_Free, NULL, 0 }
 };
 
+static cmsPluginTagType IccMaxFloat16ArrayTypePlugin = {
+
+    { cmsPluginMagicNumber, 2060, cmsPluginTagTypeSig, (cmsPluginBase*) &IccMaxExtClutPlugin },
+
+    { IccMaxSigFloat16ArrayType,
+      Type_Float16Array_Read, Type_Float16Array_Write,
+      Type_Float16Array_Dup,  Type_Float16Array_Free, NULL, 0 }
+};
+
+static cmsPluginTagType IccMaxFloat32ArrayTypePlugin = {
+
+    { cmsPluginMagicNumber, 2060, cmsPluginTagTypeSig,
+      (cmsPluginBase*) &IccMaxFloat16ArrayTypePlugin },
+
+    { IccMaxSigFloat32ArrayType,
+      Type_Float32Array_Read, Type_Float32Array_Write,
+      Type_Float32Array_Dup,  Type_Float32Array_Free, NULL, 0 }
+};
+
+// fl32 first and DecideType NULL, so both encodings are readable while writes always choose
+// the lossless one. Both entries have to stay: cmsReadTag calls IsTypeSupported on the read
+// path, so dropping fl16 here would make a real fl16-encoded profile unreadable.
+static cmsPluginTag IccMaxSpectralWhitePointTagPlugin = {
+
+    { cmsPluginMagicNumber, 2060, cmsPluginTagSig, (cmsPluginBase*) &IccMaxFloat32ArrayTypePlugin },
+
+    IccMaxSigSpectralWhitePointTag,
+    { 1, 2, { IccMaxSigFloat32ArrayType, IccMaxSigFloat16ArrayType }, NULL }
+};
+
 cmsPluginBase* CMSEXPORT cmsGetIccMaxPlugin(void)
 {
-    return (cmsPluginBase*) &IccMaxExtClutPlugin;
+    return (cmsPluginBase*) &IccMaxSpectralWhitePointTagPlugin;
 }

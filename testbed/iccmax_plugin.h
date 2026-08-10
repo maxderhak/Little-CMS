@@ -51,6 +51,36 @@
 #define ICCMAX_FirstCurveType         9
 #define ICCMAX_LastCurveType          13
 
+// float16ArrayType and float32ArrayType, ICC.2:2023 10.2.9 and 10.2.10, and the tag that
+// carries the spectral white point in either of them (or in the core's own uInt16ArrayType).
+#define IccMaxSigFloat16ArrayType        ((cmsTagTypeSignature) 0x666C3136)  // 'fl16'
+#define IccMaxSigFloat32ArrayType        ((cmsTagTypeSignature) 0x666C3332)  // 'fl32'
+#define IccMaxSigSpectralWhitePointTag   ((cmsTagSignature)     0x73777074)  // 'swpt', ICC.2 9.2.112
+
+// A bare vector of values, sized by nValues rather than by any fixed per-tag constant. See
+// iccmax_plugin.c for why: TagDescriptor->ElemCount cannot express this tag's length.
+typedef struct {
+
+    cmsContext        ContextID;
+    cmsUInt32Number    nValues;
+    cmsFloat32Number*  Values;
+
+} IccMaxFloatArray;
+
+// Allocates a zeroed value array. nValues is capped at 0xFFFF, the largest channel count an
+// ICC.2 spectral PCS signature can express (its channel count is a 16 bit field).
+CMSAPI IccMaxFloatArray* CMSEXPORT IccMaxAllocFloatArray(cmsContext ContextID, cmsUInt32Number nValues);
+CMSAPI void              CMSEXPORT IccMaxFreeFloatArray(IccMaxFloatArray* v);
+
+// swpt accessors, working directly over cmsReadRawTag / cmsWriteRawTag so that they can also
+// reach the core's own uInt16ArrayType encoding, which is not registered as a handler here.
+// IccMaxReadSpectralWhitePoint allocates *Out; release it with IccMaxFreeFloatArray.
+CMSAPI cmsBool           CMSEXPORT IccMaxReadSpectralWhitePoint(cmsHPROFILE hProfile,
+                                                                 IccMaxFloatArray** Out);
+CMSAPI cmsBool           CMSEXPORT IccMaxWriteSpectralWhitePoint(cmsHPROFILE hProfile,
+                                                                  const IccMaxFloatArray* In,
+                                                                  cmsTagTypeSignature AsType);
+
 // Returns the head of a chained plug-in list registering all of the above. Hand it to
 // cmsPlugin or cmsPluginTHR. The list is static, so there is nothing to free.
 CMSAPI cmsPluginBase* CMSEXPORT cmsGetIccMaxPlugin(void);
