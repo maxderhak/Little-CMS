@@ -120,6 +120,28 @@ CMSAPI IccMaxSpectralViewingConditions* CMSEXPORT IccMaxAllocSpectralViewingCond
 CMSAPI void                             CMSEXPORT IccMaxFreeSpectralViewingConditions(
     IccMaxSpectralViewingConditions* v);
 
+// Spectral PCS fields from an ICC.2 profile header, bytes 100..109 (ICC.2:2023 7.2.1). No
+// plug-in hook reaches the header -- plug-ins cannot hook header parsing, nor add fields to
+// _cmsICCPROFILE -- so these operate on a profile image in memory instead of a cmsHPROFILE.
+// That is not a workaround: the sub-profile already exists that way on both sides of the
+// hybrid-printer use case. On read, it arrives as bytes out of the containing profile's ICC5
+// tag; on write, cmsSaveProfileToMem produces exactly this kind of buffer, and the caller
+// patches bytes 100..109 before wrapping the result back into an ICC5 tag.
+//
+// Both validate Size >= 128 before touching anything. Every output pointer is optional (NULL
+// means "don't want it"), matching the convention cmsGetSpectralPCSRange uses on the other
+// branch. Set refuses a profile whose header major version is below 5: those bytes are
+// reserved in ICC.1, and writing them would corrupt a v4 profile. Encoding is big-endian
+// throughout: PCS as uInt32 at 100..103, start and end as float16 at 104..107, steps as
+// uInt16 at 108..109.
+CMSAPI cmsBool CMSEXPORT IccMaxGetSpectralPCSFromMem(const void* Profile, cmsUInt32Number Size,
+                                                      cmsUInt32Number* PCS, cmsFloat32Number* Start,
+                                                      cmsFloat32Number* End, cmsUInt16Number* Steps);
+
+CMSAPI cmsBool CMSEXPORT IccMaxSetSpectralPCSInMem(void* Profile, cmsUInt32Number Size,
+                                                    cmsUInt32Number PCS, cmsFloat32Number Start,
+                                                    cmsFloat32Number End, cmsUInt16Number Steps);
+
 // Returns the head of a chained plug-in list registering all of the above. Hand it to
 // cmsPlugin or cmsPluginTHR. The list is static, so there is nothing to free.
 CMSAPI cmsPluginBase* CMSEXPORT cmsGetIccMaxPlugin(void);

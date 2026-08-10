@@ -9989,6 +9989,195 @@ Done:
 }
 
 // --------------------------------------------------------------------------------------------------
+// Spectral PCS header fields (ICC.2 header bytes 100..109), reached only through
+// IccMaxGetSpectralPCSFromMem / IccMaxSetSpectralPCSInMem: no plug-in hook reaches the header
+// itself, so these two work on a profile image in memory rather than a cmsHPROFILE.
+// --------------------------------------------------------------------------------------------------
+
+static
+int CheckIccMaxSpectralPCSHeader(void)
+{
+    cmsContext ctx = NULL;
+    cmsHPROFILE hOuter = NULL;
+    cmsHPROFILE h = NULL;
+    cmsUInt8Number* RawTag = NULL;
+    cmsUInt8Number* Mem = NULL;
+    cmsUInt8Number* MemV4 = NULL;
+    cmsUInt8Number Small[127];
+    cmsUInt32Number RawTagSize = 0, Size = 0, SizeV4 = 0;
+    cmsUInt32Number PCS;
+    cmsFloat32Number Start, End;
+    cmsUInt16Number Steps;
+    int rc = 0;
+
+    ctx = WatchDogContext(NULL);
+    if (ctx == NULL) {
+        Fail("Could not create a context for the iccMAX plug-in");
+        return 0;
+    }
+
+    // Not strictly required by the two functions under test -- they operate on a raw byte
+    // buffer and neither depends on any signature this plug-in registers -- but registered
+    // anyway to match how every other iccMAX check in this file opens the fixture.
+    if (!cmsPluginTHR(ctx, cmsGetIccMaxPlugin())) {
+        Fail("Could not register the iccMAX plug-in");
+        goto Done;
+    }
+
+    // Everything through item 2 below is expected to succeed, so a signalled error must not be
+    // fatal -- the testbed installs FatalErrorQuit globally, which would exit the whole run and
+    // make Fail unreachable. Restored at Done on every exit path.
+    cmsSetLogErrorHandler(ErrorReportingFunction);
+
+    // --- 1. Against the fixture: reference bytes, not our writer ---
+    //
+    // cmsReadRawTag returns the tag's on-disk content verbatim: the 'ICCp' type signature (4
+    // bytes) plus 4 reserved bytes, then the embedded ICC.2 profile image in its entirety -- so
+    // the image starts 8 bytes in.
+
+    hOuter = cmsOpenProfileFromFileTHR(ctx, "HybridPrinterCMYK_small.icc", "r");
+    if (hOuter == NULL) {
+        Fail("Could not open HybridPrinterCMYK_small.icc");
+        goto Done;
+    }
+
+    RawTagSize = cmsReadRawTag(hOuter, ICCMAX_SigEmbeddedV5Tag, NULL, 0);
+    if (RawTagSize < 8 + 128) {
+        Fail("ICC5 tag came back implausibly small (%u bytes)", RawTagSize);
+        goto Done;
+    }
+
+    RawTag = (cmsUInt8Number*) malloc(RawTagSize);
+    if (RawTag == NULL) { Fail("malloc failed"); goto Done; }
+
+    if (cmsReadRawTag(hOuter, ICCMAX_SigEmbeddedV5Tag, RawTag, RawTagSize) != RawTagSize) {
+        Fail("Could not read the raw ICC5 tag");
+        goto Done;
+    }
+
+    PCS = 0; Start = 0.0f; End = 0.0f; Steps = 0;
+
+    if (!IccMaxGetSpectralPCSFromMem(RawTag + 8, RawTagSize - 8, &PCS, &Start, &End, &Steps)) {
+        Fail("IccMaxGetSpectralPCSFromMem refused the fixture sub-profile");
+        goto Done;
+    }
+
+    if (isnan(Start) || isnan(End)) {
+        Fail("Fixture spectral PCS range came back NaN");
+        goto Done;
+    }
+
+    if (PCS != 0x72730024 ||
+        fabs(Start - 380.0) > 1E-5 || fabs(End - 730.0) > 1E-5 || Steps != 36) {
+
+        Fail("Fixture spectral PCS header is PCS=0x%x range %g..%g steps %u, "
+             "expected PCS=0x72730024 range 380..730 steps 36",
+             PCS, Start, End, Steps);
+        goto Done;
+    }
+
+    // --- 2. Round trip: a fresh v5.0 profile, Set then Get ---
+
+    h = cmsCreateProfilePlaceholder(ctx);
+    if (h == NULL) { Fail("Could not create a placeholder profile"); goto Done; }
+
+    cmsSetProfileVersion(h, 5.0);
+
+    if (!cmsSaveProfileToMem(h, NULL, &Size) || Size == 0) {
+        Fail("Could not size-probe the v5.0 profile");
+        goto Done;
+    }
+
+    Mem = (cmsUInt8Number*) malloc(Size);
+    if (Mem == NULL) { Fail("malloc failed"); goto Done; }
+
+    if (!cmsSaveProfileToMem(h, Mem, &Size)) {
+        Fail("Could not save the v5.0 profile to memory");
+        goto Done;
+    }
+
+    if (!IccMaxSetSpectralPCSInMem(Mem, Size, 0x72730024, 400.0f, 700.0f, 42)) {
+        Fail("IccMaxSetSpectralPCSInMem refused a v5.0 profile buffer");
+        goto Done;
+    }
+
+    PCS = 0; Start = 0.0f; End = 0.0f; Steps = 0;
+
+    if (!IccMaxGetSpectralPCSFromMem(Mem, Size, &PCS, &Start, &End, &Steps)) {
+        Fail("IccMaxGetSpectralPCSFromMem refused the profile it had just been set on");
+        goto Done;
+    }
+
+    if (isnan(Start) || isnan(End)) {
+        Fail("Round-tripped spectral PCS range came back NaN");
+        goto Done;
+    }
+
+    // 400.0 and 700.0 are exactly representable in float16, so this compares exactly rather
+    // than with a tolerance.
+    if (PCS != 0x72730024 || Start != 400.0f || End != 700.0f || Steps != 42) {
+
+        Fail("Round trip changed the header: got PCS=0x%x range %g..%g steps %u, "
+             "expected PCS=0x72730024 range 400..700 steps 42",
+             PCS, Start, End, Steps);
+        goto Done;
+    }
+
+    // --- 3. Set refuses a v4.3 profile buffer ---
+    //
+    // Neither function signals an error on rejection -- they return FALSE silently -- so this
+    // and the next item need no ErrorReportingFunction swap of their own.
+
+    cmsSetProfileVersion(h, 4.3);
+
+    if (!cmsSaveProfileToMem(h, NULL, &SizeV4) || SizeV4 == 0) {
+        Fail("Could not size-probe the v4.3 profile");
+        goto Done;
+    }
+
+    MemV4 = (cmsUInt8Number*) malloc(SizeV4);
+    if (MemV4 == NULL) { Fail("malloc failed"); goto Done; }
+
+    if (!cmsSaveProfileToMem(h, MemV4, &SizeV4)) {
+        Fail("Could not save the v4.3 profile to memory");
+        goto Done;
+    }
+
+    if (IccMaxSetSpectralPCSInMem(MemV4, SizeV4, 0x72730024, 400.0f, 700.0f, 42)) {
+        Fail("IccMaxSetSpectralPCSInMem accepted a v4.3 profile buffer");
+        goto Done;
+    }
+
+    // --- 4. Both functions refuse a buffer smaller than 128 bytes ---
+
+    memset(Small, 0, sizeof(Small));
+
+    if (IccMaxGetSpectralPCSFromMem(Small, sizeof(Small), &PCS, &Start, &End, &Steps)) {
+        Fail("IccMaxGetSpectralPCSFromMem accepted a 127 byte buffer");
+        goto Done;
+    }
+
+    if (IccMaxSetSpectralPCSInMem(Small, sizeof(Small), 0x72730024, 400.0f, 700.0f, 42)) {
+        Fail("IccMaxSetSpectralPCSInMem accepted a 127 byte buffer");
+        goto Done;
+    }
+
+    rc = 1;
+
+Done:
+    cmsSetLogErrorHandler(FatalErrorQuit);
+
+    if (MemV4 != NULL) free(MemV4);
+    if (Mem != NULL) free(Mem);
+    if (RawTag != NULL) free(RawTag);
+    if (h != NULL) cmsCloseProfile(h);
+    if (hOuter != NULL) cmsCloseProfile(hOuter);
+    if (ctx != NULL) cmsDeleteContext(ctx);
+
+    return rc;
+}
+
+// --------------------------------------------------------------------------------------------------
 // P E R F O R M A N C E   C H E C K S
 // --------------------------------------------------------------------------------------------------
 
@@ -10938,6 +11127,7 @@ int main(int argc, char* argv[])
     Check("iccMAX spectral white point tag via plug-in", CheckIccMaxSpectralWhitePoint);
     Check("iccMAX spectral viewing conditions round trip via plug-in", CheckIccMaxSpectralViewingConditions);
     Check("iccMAX spectral viewing conditions against fixture via plug-in", CheckIccMaxSvcnAgainstFixture);
+    Check("iccMAX spectral PCS header fields on a memory buffer", CheckIccMaxSpectralPCSHeader);
     }
 
     if (DoPluginTests)

@@ -1099,6 +1099,79 @@ void Type_SpectralViewingConditions_Free(struct _cms_typehandler_struct* self, v
 
 
 // ********************************************************************************
+// Spectral PCS header fields, ICC.2:2023 7.2.1 -- bytes 100..109 of the profile header
+// ********************************************************************************
+//
+// Nothing here is a plug-in hook: no plug-in mechanism reaches header parsing, so these two
+// functions work directly on a profile image in memory rather than on a cmsHPROFILE. See the
+// header comment in iccmax_plugin.h for why that is exactly the shape the hybrid-printer use
+// case already needs, on both the read and the write side.
+//
+//     100..103  spectral PCS signature   uInt32Number, 0 if the PCS is not spectral
+//     104..105  spectral range start     float16Number, nm
+//     106..107  spectral range end       float16Number, nm
+//     108..109  spectral range steps     uInt16Number
+//
+// These offsets are absolute, counted from the start of the profile image -- not from any
+// field of the core's header struct. (Working from Header.reserved[0] as "byte 100" caused an
+// off-by-16 error earlier in this project, because the core struct's reserved array does not
+// start at byte 100 the way it might look; absolute offsets sidestep that entirely.)
+
+cmsBool IccMaxGetSpectralPCSFromMem(const void* Profile, cmsUInt32Number Size,
+                                    cmsUInt32Number* PCS, cmsFloat32Number* Start,
+                                    cmsFloat32Number* End, cmsUInt16Number* Steps)
+{
+    const cmsUInt8Number* p = (const cmsUInt8Number*) Profile;
+    cmsUInt32Number RawPCS;
+    cmsUInt16Number RawStart, RawEnd, RawSteps;
+
+    if (Profile == NULL || Size < 128) return FALSE;
+
+    memmove(&RawPCS,   p + 100, 4);
+    memmove(&RawStart, p + 104, 2);
+    memmove(&RawEnd,   p + 106, 2);
+    memmove(&RawSteps, p + 108, 2);
+
+    if (PCS   != NULL) *PCS   = _cmsAdjustEndianess32(RawPCS);
+    if (Start != NULL) *Start = _cmsHalf2Float(_cmsAdjustEndianess16(RawStart));
+    if (End   != NULL) *End   = _cmsHalf2Float(_cmsAdjustEndianess16(RawEnd));
+    if (Steps != NULL) *Steps = _cmsAdjustEndianess16(RawSteps);
+
+    return TRUE;
+}
+
+cmsBool IccMaxSetSpectralPCSInMem(void* Profile, cmsUInt32Number Size,
+                                  cmsUInt32Number PCS, cmsFloat32Number Start,
+                                  cmsFloat32Number End, cmsUInt16Number Steps)
+{
+    cmsUInt8Number* p = (cmsUInt8Number*) Profile;
+    cmsUInt32Number RawVersion;
+    cmsUInt32Number RawPCS;
+    cmsUInt16Number RawStart, RawEnd, RawSteps;
+
+    if (Profile == NULL || Size < 128) return FALSE;
+
+    // Header bytes 8..11 are the version number, major.minor.bugfix.reserved with major in the
+    // top byte. Those bytes 100..109 are reserved in ICC.1, so writing them into a v4 (or
+    // earlier) profile would corrupt it -- refuse anything below v5.
+    memmove(&RawVersion, p + 8, 4);
+    if ((_cmsAdjustEndianess32(RawVersion) >> 24) < 5) return FALSE;
+
+    RawPCS   = _cmsAdjustEndianess32(PCS);
+    RawStart = _cmsAdjustEndianess16(_cmsFloat2Half(Start));
+    RawEnd   = _cmsAdjustEndianess16(_cmsFloat2Half(End));
+    RawSteps = _cmsAdjustEndianess16(Steps);
+
+    memmove(p + 100, &RawPCS,   4);
+    memmove(p + 104, &RawStart, 2);
+    memmove(p + 106, &RawEnd,   2);
+    memmove(p + 108, &RawSteps, 2);
+
+    return TRUE;
+}
+
+
+// ********************************************************************************
 // The plug-in list
 // ********************************************************************************
 //
