@@ -62,6 +62,36 @@
 
 
 // ********************************************************************************
+// float16Number IO
+// ********************************************************************************
+//
+// ICC.2 encodes a spectralRange, and optionally an extendedCLUT sample or a
+// singleSampledCurve sample, as a float16Number. The half-to-float conversion itself is
+// _cmsHalf2Float, which the library has exported for years; only the read and the byte
+// swap are here.
+//
+// Deliberately local rather than a call to the core's _cmsReadFloat16Number, even though
+// that function exists on this branch. Two reasons. It keeps this plug-in dependent on
+// nothing the library did not already export before any of this work -- WriteFloat16Number
+// below is local for exactly that reason, since the core exports no float16 writer, and a
+// local writer beside a borrowed reader was an inconsistency of this file's own making.
+// And it leaves the core's own float16 reader with a single caller, the 'sngf' reader in
+// cmstypes.c: if singleSampledCurve reading ever moves out of the core behind a curve
+// encoding hook, that helper and the cmsSigSingleSampledCurve enumerator leave with it.
+static
+cmsBool ReadFloat16Number(cmsIOHANDLER* io, cmsFloat32Number* n)
+{
+    cmsUInt16Number h;
+
+    if (io ->Read(io, &h, sizeof(cmsUInt16Number), 1) != 1) return FALSE;
+
+    if (n != NULL) *n = _cmsHalf2Float(_cmsAdjustEndianess16(h));
+
+    return TRUE;
+}
+
+
+// ********************************************************************************
 // extendedCLUTElement ('xclt') -- ICC.2:2023 11.2.7, Table 117
 // ********************************************************************************
 //
@@ -191,7 +221,7 @@ void* Type_MPEextclut_Read(struct _cms_typehandler_struct* self, cmsIOHANDLER* i
     case 1: // float16Number
         for (i = 0; i < clut ->nEntries; i++) {
 
-            if (!_cmsReadFloat16Number(io, &clut ->Tab.TFloat[i])) goto Error;
+            if (!ReadFloat16Number(io, &clut ->Tab.TFloat[i])) goto Error;
         }
         break;
 #endif
@@ -563,7 +593,7 @@ void* ReadFloatArray(struct _cms_typehandler_struct* self, cmsIOHANDLER* io,
 
         if (BytesPerValue == 2) {
 
-            if (!_cmsReadFloat16Number(io, &v ->Values[i])) goto Error;
+            if (!ReadFloat16Number(io, &v ->Values[i])) goto Error;
         }
         else {
 
@@ -580,7 +610,7 @@ Error:
 }
 
 // There is no core _cmsWriteFloat16Number to call, so this writes the half directly through
-// the exported conversion and endian-swap helpers -- the same two calls _cmsReadFloat16Number
+// the exported conversion and endian-swap helpers -- the same two calls ReadFloat16Number
 // makes in reverse.
 static
 cmsBool WriteFloat16Number(cmsIOHANDLER* io, cmsFloat32Number v)
@@ -977,8 +1007,8 @@ void* Type_SpectralViewingConditions_Read(struct _cms_typehandler_struct* self, 
     if (SizeOfTag < 12) return NULL;
 
     if (!_cmsReadUInt32Number(io, &ObserverType)) return NULL;
-    if (!_cmsReadFloat16Number(io, &ObserverStart)) return NULL;
-    if (!_cmsReadFloat16Number(io, &ObserverEnd)) return NULL;
+    if (!ReadFloat16Number(io, &ObserverStart)) return NULL;
+    if (!ReadFloat16Number(io, &ObserverEnd)) return NULL;
     if (!_cmsReadUInt16Number(io, &N)) return NULL;
     if (!_cmsReadUInt16Number(io, &Reserved)) return NULL;
 
@@ -1018,8 +1048,8 @@ void* Type_SpectralViewingConditions_Read(struct _cms_typehandler_struct* self, 
     // Illuminant: type, CCT, spectral range, steps, two reserved bytes
     if (!_cmsReadUInt32Number(io, &IlluminantType)) goto Error;
     if (!_cmsReadFloat32Number(io, &CCT)) goto Error;
-    if (!_cmsReadFloat16Number(io, &IlluminantStart)) goto Error;
-    if (!_cmsReadFloat16Number(io, &IlluminantEnd)) goto Error;
+    if (!ReadFloat16Number(io, &IlluminantStart)) goto Error;
+    if (!ReadFloat16Number(io, &IlluminantEnd)) goto Error;
     if (!_cmsReadUInt16Number(io, &M)) goto Error;
     if (!_cmsReadUInt16Number(io, &Reserved)) goto Error;
 

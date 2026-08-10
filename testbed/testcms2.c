@@ -8938,6 +8938,62 @@ int CheckMixedRawAndCooked(void)
 }
 
 // --------------------------------------------------------------------------------------------------
+// A CLUT whose total sample count does not fit in 32 bits must be refused at allocation time
+// rather than allocated short. CubeSize() bounds only its own product, so the multiply by the
+// output channel count is where it overflows: the grid below is 11*31*63*63*129 = 174592341
+// nodes, and times 123 output channels that wraps to 21463. The allocation would be 84 kB while
+// _cmsComputeInterpParamsEx computed full width strides for it, so the first cmsPipelineEvalFloat
+// would read far out of bounds.
+//
+// Nothing to do with iccMAX or with the plug-in: the guard is unconditional, and this is the one
+// memory-safety-relevant part of the core diff this branch carries. Both allocators get the same
+// guard, so both are checked here.
+// --------------------------------------------------------------------------------------------------
+static
+cmsInt32Number CheckCLUTOverflowRejected(void)
+{
+    cmsUInt32Number Overflowing[5] = { 11, 31, 63, 63, 129 };
+    cmsUInt32Number Small[3] = { 2, 2, 2 };
+    cmsStage* mpe;
+
+    mpe = cmsStageAllocCLutFloatGranular(DbgThread(), Overflowing, 5, 123, NULL);
+    if (mpe != NULL) {
+
+        Fail("cmsStageAllocCLutFloatGranular accepted a grid whose sample count overflows");
+        cmsStageFree(mpe);
+        return 0;
+    }
+
+    mpe = cmsStageAllocCLut16bitGranular(DbgThread(), Overflowing, 5, 123, NULL);
+    if (mpe != NULL) {
+
+        Fail("cmsStageAllocCLut16bitGranular accepted a grid whose sample count overflows");
+        cmsStageFree(mpe);
+        return 0;
+    }
+
+    // The same check must not turn away an ordinary table
+    mpe = cmsStageAllocCLutFloatGranular(DbgThread(), Small, 3, 3, NULL);
+    if (mpe == NULL) {
+
+        Fail("cmsStageAllocCLutFloatGranular refused a 2x2x2 to 3 CLUT");
+        return 0;
+    }
+    cmsStageFree(mpe);
+
+    mpe = cmsStageAllocCLut16bitGranular(DbgThread(), Small, 3, 3, NULL);
+    if (mpe == NULL) {
+
+        Fail("cmsStageAllocCLut16bitGranular refused a 2x2x2 to 3 CLUT");
+        return 0;
+    }
+    cmsStageFree(mpe);
+
+    return 1;
+}
+
+
+// --------------------------------------------------------------------------------------------------
 // iccMAX hybrid printer profile, read through the additive plug-in in iccmax_plugin.c
 // --------------------------------------------------------------------------------------------------
 
@@ -11548,6 +11604,7 @@ int main(int argc, char* argv[])
     Check("Saving linearization devicelink", CheckSaveLinearizationDevicelink);
     Check("Gamut check on floats", CheckGamutCheckFloats);
     Check("Mixing RAW and Cooked tags", CheckMixedRawAndCooked);
+    Check("CLUT overflow rejected", CheckCLUTOverflowRejected);
     Check("iccMAX hybrid printer spectra via plug-in", CheckIccMaxHybridPrinter);
     Check("iccMAX spectral white point tag via plug-in", CheckIccMaxSpectralWhitePoint);
     Check("iccMAX spectral viewing conditions round trip via plug-in", CheckIccMaxSpectralViewingConditions);
