@@ -1112,10 +1112,12 @@ void Type_SpectralViewingConditions_Free(struct _cms_typehandler_struct* self, v
 //     106..107  spectral range end       float16Number, nm
 //     108..109  spectral range steps     uInt16Number
 //
-// These offsets are absolute, counted from the start of the profile image -- not from any
-// field of the core's header struct. (Working from Header.reserved[0] as "byte 100" caused an
-// off-by-16 error earlier in this project, because the core struct's reserved array does not
-// start at byte 100 the way it might look; absolute offsets sidestep that entirely.)
+// These offsets are absolute, counted from the start of the profile image, rather than
+// expressed as indices into the 28 byte reserved area of cmsICCHeader that begins at byte 100.
+// Both spellings are correct, but the index form invites an off-by-16: reserved[0] is byte 100,
+// the spectral PCS, while reserved[16] is byte 116, the multiplex colour space signature --
+// two different header fields sixteen bytes apart, and easy to confuse when reading the spec
+// tables side by side. Absolute offsets sidestep it.
 
 cmsBool IccMaxGetSpectralPCSFromMem(const void* Profile, cmsUInt32Number Size,
                                     cmsUInt32Number* PCS, cmsFloat32Number* Start,
