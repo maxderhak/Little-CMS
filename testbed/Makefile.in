@@ -112,7 +112,7 @@ mkinstalldirs = $(install_sh) -d
 CONFIG_CLEAN_FILES =
 CONFIG_CLEAN_VPATH_FILES =
 am_testcms_OBJECTS = testcms2.$(OBJEXT) testplugin.$(OBJEXT) \
-	zoo_icc.$(OBJEXT)
+	zoo_icc.$(OBJEXT) iccmax_plugin.$(OBJEXT)
 testcms_OBJECTS = $(am_testcms_OBJECTS)
 testcms_DEPENDENCIES = $(top_builddir)/src/liblcms2.la
 AM_V_lt = $(am__v_lt_@AM_V@)
@@ -137,8 +137,9 @@ am__v_at_1 =
 DEFAULT_INCLUDES = -I.@am__isrc@
 depcomp = $(SHELL) $(top_srcdir)/depcomp
 am__maybe_remake_depfiles = depfiles
-am__depfiles_remade = ./$(DEPDIR)/testcms2.Po \
-	./$(DEPDIR)/testplugin.Po ./$(DEPDIR)/zoo_icc.Po
+am__depfiles_remade = ./$(DEPDIR)/iccmax_plugin.Po \
+	./$(DEPDIR)/testcms2.Po ./$(DEPDIR)/testplugin.Po \
+	./$(DEPDIR)/zoo_icc.Po
 am__mv = mv -f
 COMPILE = $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) \
 	$(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS)
@@ -344,10 +345,12 @@ AM_CPPFLAGS = -I$(top_builddir)/include -I$(top_srcdir)/include -I$(top_srcdir)/
 # library.
 testcms_LDADD = $(top_builddir)/src/liblcms2.la 
 testcms_LDFLAGS = -static @LDFLAGS@
-testcms_SOURCES = testcms2.c testplugin.c zoo_icc.c testcms2.h
+testcms_SOURCES = testcms2.c testplugin.c zoo_icc.c iccmax_plugin.c \
+                  testcms2.h iccmax_plugin.h
 EXTRA_DIST = test1.icc bad.icc toosmall.icc test2.icc \
              test3.icc test4.icc \
-             test5.icc ibm-t61.icc crayons.icc bad_mpe.icc 
+             test5.icc ibm-t61.icc crayons.icc bad_mpe.icc \
+             HybridPrinterCMYK_small.icc
 
 all: all-am
 
@@ -397,6 +400,7 @@ mostlyclean-compile:
 distclean-compile:
 	-rm -f *.tab.c
 
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/iccmax_plugin.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/testcms2.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/testplugin.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/zoo_icc.Po@am__quote@ # am--include-marker
@@ -563,6 +567,7 @@ clean-am: clean-checkPROGRAMS clean-generic clean-libtool \
 	mostlyclean-am
 
 distclean: distclean-am
+	-rm -f ./$(DEPDIR)/iccmax_plugin.Po
 	-rm -f ./$(DEPDIR)/testcms2.Po
 	-rm -f ./$(DEPDIR)/testplugin.Po
 	-rm -f ./$(DEPDIR)/zoo_icc.Po
@@ -611,6 +616,7 @@ install-ps-am:
 installcheck-am:
 
 maintainer-clean: maintainer-clean-am
+	-rm -f ./$(DEPDIR)/iccmax_plugin.Po
 	-rm -f ./$(DEPDIR)/testcms2.Po
 	-rm -f ./$(DEPDIR)/testplugin.Po
 	-rm -f ./$(DEPDIR)/zoo_icc.Po

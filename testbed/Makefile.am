@@ -16,11 +16,13 @@ check_PROGRAMS = testcms
 # library.
 testcms_LDADD = $(top_builddir)/src/liblcms2.la 
 testcms_LDFLAGS = -static @LDFLAGS@
-testcms_SOURCES = testcms2.c testplugin.c zoo_icc.c testcms2.h
+testcms_SOURCES = testcms2.c testplugin.c zoo_icc.c iccmax_plugin.c \
+                  testcms2.h iccmax_plugin.h
 
 EXTRA_DIST = test1.icc bad.icc toosmall.icc test2.icc \
              test3.icc test4.icc \
-             test5.icc ibm-t61.icc crayons.icc bad_mpe.icc 
+             test5.icc ibm-t61.icc crayons.icc bad_mpe.icc \
+             HybridPrinterCMYK_small.icc
 
 check:
 	if [ $(top_srcdir) != $(top_builddir) ]; then \

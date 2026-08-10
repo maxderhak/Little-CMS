@@ -290,6 +290,7 @@
     <ClCompile Include="..\..\..\testbed\testcms2.c" />
     <ClCompile Include="..\..\..\testbed\testplugin.c" />
     <ClCompile Include="..\..\..\testbed\zoo_icc.c" />
+    <ClCompile Include="..\..\..\testbed\iccmax_plugin.c" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
