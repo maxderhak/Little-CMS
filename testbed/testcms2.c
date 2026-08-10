@@ -10194,6 +10194,13 @@ Done:
 #define ICCMAX_AUTHOR_GRID   5      // CLUT nodes per axis
 #define ICCMAX_AUTHOR_SPCS   0x72730004u   // 'rs' reflectance spectra, 4 channels
 
+// The spectral range stamped into the authored header. Both endpoints are exactly
+// representable in float16, so the read-back comparison is exact rather than approximate.
+// Used by the stamp, the comparison and the diagnostic alike, so none of the three can drift.
+#define ICCMAX_AUTHOR_START  400.0f
+#define ICCMAX_AUTHOR_END    700.0f
+#define ICCMAX_AUTHOR_STEPS  4
+
 // The four swpt values, and the three svcn observer/illuminant values, are all exactly
 // representable in float32, so the read-back comparisons are tight rather than approximate.
 static const cmsFloat32Number IccMaxAuthorSwpt[ICCMAX_AUTHOR_CHANS] = {
@@ -10397,7 +10404,8 @@ int CheckIccMaxAuthorHybridProfile(void)
 
     // No plug-in hook reaches the header, so the spectral PCS goes in here, on the serialized
     // image, rather than through a tag. 400 and 700 are exact in float16.
-    if (!IccMaxSetSpectralPCSInMem(SubMem, SubSize, ICCMAX_AUTHOR_SPCS, 400.0f, 700.0f, 4)) {
+    if (!IccMaxSetSpectralPCSInMem(SubMem, SubSize, ICCMAX_AUTHOR_SPCS,
+                                   ICCMAX_AUTHOR_START, ICCMAX_AUTHOR_END, ICCMAX_AUTHOR_STEPS)) {
         Fail("IccMaxSetSpectralPCSInMem refused the authored v5.0 sub-profile");
         goto Done;
     }
@@ -10469,9 +10477,17 @@ int CheckIccMaxAuthorHybridProfile(void)
         goto Done;
     }
 
-    if (PCS != ICCMAX_AUTHOR_SPCS || Start != 400.0f || End != 700.0f || Steps != 4) {
-        Fail("Extracted spectral PCS is 0x%x range %g..%g steps %u, expected 0x%x range "
-             "400..700 steps 4", PCS, Start, End, Steps, ICCMAX_AUTHOR_SPCS);
+    // Expected values live in one place so the comparison and the diagnostic cannot drift
+    // apart: a message that still says "400..700" after someone edits the check would send
+    // the next reader chasing the wrong field.
+    if (PCS != ICCMAX_AUTHOR_SPCS ||
+        Start != ICCMAX_AUTHOR_START || End != ICCMAX_AUTHOR_END ||
+        Steps != ICCMAX_AUTHOR_STEPS) {
+
+        Fail("Extracted spectral PCS is 0x%x range %g..%g steps %u, expected 0x%x range %g..%g steps %u",
+             PCS, Start, End, Steps,
+             ICCMAX_AUTHOR_SPCS, (cmsFloat64Number) ICCMAX_AUTHOR_START,
+             (cmsFloat64Number) ICCMAX_AUTHOR_END, ICCMAX_AUTHOR_STEPS);
         goto Done;
     }
 
