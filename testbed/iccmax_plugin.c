@@ -912,9 +912,17 @@ void* Type_SpectralViewingConditions_Read(struct _cms_typehandler_struct* self, 
     // outright.
     if (N == 0) return NULL;
 
-    // The observer matrix plus the illuminant's own 16 byte header (type, CCT, range, steps,
-    // reserved) must fit before M can be trusted to have been read from validated bytes. N is
-    // a uInt16, so 12*N cannot overflow 32 bits.
+    // The observer matrix must fit before it is allocated and read. N is a uInt16, so 12*N
+    // cannot overflow 32 bits.
+    //
+    // The trailing 16 is the illuminant's own header (type, CCT, range, steps, reserved), so
+    // that M is read from bytes the tag size vouches for. It is fail-fast rather than a
+    // correctness boundary: the second check below demands 52 + 12N + 4M, and M == 0 is
+    // already rejected, so it demands at least 56 + 12N against this one's 28 + 12N. For a
+    // tag to pass this check without the 16 and still pass the second, it would need
+    // 52 + 12N + 4M <= 12 + 12N, i.e. 4M <= -40, which cannot happen. Keep the term anyway --
+    // it avoids allocating the matrix for a parse that is already doomed -- but do not
+    // mistake it for the bound that makes the reader safe. That is the second check.
     n3 = 3 * (cmsUInt32Number) N;
 
     if (SizeOfTag < 12u + 12u * (cmsUInt32Number) N + 16u) return NULL;
