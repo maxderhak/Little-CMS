@@ -660,8 +660,12 @@ cmsBool IccMaxReadSpectralWhitePoint(cmsHPROFILE hProfile, IccMaxFloatArray** Ou
     if (Out == NULL) return FALSE;
     *Out = NULL;
 
+    // The 8 byte type signature and reserved field must be there before the signature can
+    // be read at all. The per-value minimum is applied below, once the encoding is known:
+    // checking for 12 here would reject a legitimate single-value fl16 or ui16 tag, which
+    // is only 10 bytes, while the writer would happily have produced one.
     Size = cmsReadRawTag(hProfile, IccMaxSigSpectralWhitePointTag, NULL, 0);
-    if (Size < 12) return FALSE;                 // 8 byte prefix plus at least one value
+    if (Size < 8) return FALSE;
 
     Raw = (cmsUInt8Number*) _cmsMalloc(cmsGetProfileContextID(hProfile), Size);
     if (Raw == NULL) return FALSE;
@@ -682,6 +686,9 @@ cmsBool IccMaxReadSpectralWhitePoint(cmsHPROFILE hProfile, IccMaxFloatArray** Ou
                 "swpt has type '%x', which ICC.2 9.2.112 does not permit", Type);
             goto Error;
     }
+
+    // Now that the width is known, require at least one whole value
+    if (Size < 8 + BytesPerValue) goto Error;
 
     n = (Size - 8) / BytesPerValue;
     if (n == 0) goto Error;

@@ -9502,6 +9502,74 @@ int CheckIccMaxSpectralWhitePoint(void)
         }
     }
 
+    // --- 6. A single value in a 2-byte encoding. Such a tag is only 10 bytes, so a reader
+    // that applies a flat 12-byte minimum rejects what the writer just produced. ICC.2 does
+    // not forbid a one-entry swpt, and read and write must agree about it either way.
+    {
+        static const cmsTagTypeSignature Narrow[2] = {
+            IccMaxSigFloat16ArrayType, cmsSigUInt16ArrayType };
+        cmsUInt32Number e;
+
+        for (e = 0; e < 2; e++) {
+
+            IccMaxFloatArray* One = IccMaxAllocFloatArray(DbgThread(), 1);
+            IccMaxFloatArray* Back = NULL;
+            cmsHPROFILE h1 = cmsCreateProfilePlaceholder(DbgThread());
+            cmsUInt8Number* M1 = NULL;
+            cmsUInt32Number S1 = 0;
+
+            if (One == NULL || h1 == NULL) {
+                if (One != NULL) IccMaxFreeFloatArray(One);
+                if (h1 != NULL) cmsCloseProfile(h1);
+                goto Done;
+            }
+
+            One ->Values[0] = 0.5f;
+            cmsSetProfileVersion(h1, 5.0);
+
+            if (!IccMaxWriteSpectralWhitePoint(h1, One, Narrow[e]) ||
+                !cmsSaveProfileToMem(h1, NULL, &S1) || S1 == 0 ||
+                (M1 = (cmsUInt8Number*) malloc(S1)) == NULL ||
+                !cmsSaveProfileToMem(h1, M1, &S1)) {
+
+                Fail("Could not author a single value swpt in encoding %d", e);
+                if (M1 != NULL) free(M1);
+                IccMaxFreeFloatArray(One);
+                cmsCloseProfile(h1);
+                goto Done;
+            }
+
+            cmsCloseProfile(h1);
+            h1 = cmsOpenProfileFromMemTHR(DbgThread(), M1, S1);
+
+            if (h1 == NULL || !IccMaxReadSpectralWhitePoint(h1, &Back) || Back == NULL) {
+
+                Fail("A single value swpt written in encoding %d could not be read back", e);
+                if (Back != NULL) IccMaxFreeFloatArray(Back);
+                free(M1);
+                IccMaxFreeFloatArray(One);
+                if (h1 != NULL) cmsCloseProfile(h1);
+                goto Done;
+            }
+
+            if (Back ->nValues != 1 || fabs(Back ->Values[0] - 0.5) > 2E-5) {
+
+                Fail("Single value swpt in encoding %d came back as %d values, first %f",
+                     e, Back ->nValues, Back ->Values[0]);
+                IccMaxFreeFloatArray(Back);
+                free(M1);
+                IccMaxFreeFloatArray(One);
+                cmsCloseProfile(h1);
+                goto Done;
+            }
+
+            IccMaxFreeFloatArray(Back);
+            free(M1);
+            IccMaxFreeFloatArray(One);
+            cmsCloseProfile(h1);
+        }
+    }
+
     rc = 1;
 
 Done:
