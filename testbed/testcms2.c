@@ -10178,6 +10178,415 @@ Done:
 }
 
 // --------------------------------------------------------------------------------------------------
+// Authoring a hybrid printer profile from nothing, and reading every part of it back.
+//
+// This is the write-side counterpart of CheckIccMaxHybridPrinter, which only reads a committed
+// fixture. An ICC.2 sub-profile is built with cmsCreateProfilePlaceholder and given a swpt, an
+// svcn and a spectral DToB3 through plain cmsWriteTag; it is serialized, its spectral PCS header
+// fields are stamped in, and the result is wrapped into an ICC.1 outer profile's ICC5 tag. The
+// outer profile is then serialized, reopened, unwrapped, and each piece checked.
+//
+// Everything below is public lcms API plus this plug-in's own exports. Nothing under src/ or
+// include/ was changed for it.
+// --------------------------------------------------------------------------------------------------
+
+#define ICCMAX_AUTHOR_CHANS  4      // CMYK in, and (for this synthetic profile) 4 spectral out
+#define ICCMAX_AUTHOR_GRID   5      // CLUT nodes per axis
+#define ICCMAX_AUTHOR_SPCS   0x72730004u   // 'rs' reflectance spectra, 4 channels
+
+// The four swpt values, and the three svcn observer/illuminant values, are all exactly
+// representable in float32, so the read-back comparisons are tight rather than approximate.
+static const cmsFloat32Number IccMaxAuthorSwpt[ICCMAX_AUTHOR_CHANS] = {
+    0.125f, 0.375f, 0.75f, 1.25f     // last one > 1: ordinary for a reflectance, and fl32 keeps it
+};
+
+// An identity sampler for cmsStageSampleCLutFloat, which presents In[] already normalised to
+// 0..1. It quantises each node to a multiple of 1/65535, so the CLUT this builds reconstructs
+// the identity to within about 7.6e-6 -- well inside the 1E-4 the probes below allow. The
+// alternative, _cmsStageAllocIdentityCLut, builds a *16 bit* CLUT, which Type_MPEclut_Write
+// refuses ("Only floats are supported in MPE"); and cmsStageAllocCLutFloat with a NULL table
+// gives a zero-filled grid, not an identity, which is exactly what the all-1.0 probe catches.
+static
+cmsInt32Number IccMaxIdentitySampler(CMSREGISTER const cmsFloat32Number In[],
+                                     CMSREGISTER cmsFloat32Number Out[],
+                                     CMSREGISTER void* Cargo)
+{
+    cmsUInt32Number i, n = *(const cmsUInt32Number*) Cargo;
+
+    for (i = 0; i < n; i++)
+        Out[i] = In[i];
+
+    return 1;
+}
+
+// One identity probe, factored out so the three call sites below read as three probes.
+static
+int CheckIccMaxIdentityAt(cmsPipeline* Lut, cmsFloat32Number v0, cmsFloat32Number v1,
+                          cmsFloat32Number v2, cmsFloat32Number v3)
+{
+    cmsFloat32Number In[ICCMAX_AUTHOR_CHANS], Out[ICCMAX_AUTHOR_CHANS];
+    int i;
+
+    In[0] = v0; In[1] = v1; In[2] = v2; In[3] = v3;
+
+    memset(Out, 0, sizeof(Out));
+    cmsPipelineEvalFloat(In, Out, Lut);
+
+    for (i = 0; i < ICCMAX_AUTHOR_CHANS; i++) {
+
+        // NaN needs a test of its own: fabs(NaN - want) > tol is FALSE, so a NaN would sail
+        // through the tolerance check below without a sound.
+        if (isnan(Out[i])) {
+
+            Fail("Authored DToB3 gave NaN in channel %d at (%g %g %g %g)", i, v0, v1, v2, v3);
+            return 0;
+        }
+
+        if (fabs(Out[i] - In[i]) > 1E-4) {
+
+            Fail("Authored DToB3 is not an identity at (%g %g %g %g): channel %d gave %.7f, "
+                 "expected %.7f", v0, v1, v2, v3, i, Out[i], In[i]);
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+static
+int CheckIccMaxAuthorHybridProfile(void)
+{
+    cmsContext ctx = NULL;
+    cmsHPROFILE hSub = NULL;          // the ICC.2 sub-profile being authored
+    cmsHPROFILE hOuter = NULL;        // the ICC.1 container being authored
+    cmsHPROFILE hReadOuter = NULL;    // the container, reopened from its own bytes
+    cmsHPROFILE hReadSub = NULL;      // the sub-profile, reopened from the extracted bytes
+    IccMaxFloatArray* wSwpt = NULL;
+    IccMaxSpectralViewingConditions* wSvcn = NULL;
+    cmsPipeline* Lut = NULL;          // ours: cmsWriteTag duplicates, it never takes ownership
+    cmsStage* Clut = NULL;            // ours only until cmsPipelineInsertStage accepts it
+    cmsUInt8Number* SubMem = NULL;
+    cmsUInt8Number* OuterMem = NULL;
+    void* Extracted = NULL;
+    cmsUInt32Number SubSize = 0, OuterSize = 0, ExtractedSize = 0;
+    const IccMaxFloatArray* rSwpt;
+    const IccMaxSpectralViewingConditions* rSvcn;
+    cmsPipeline* rLut;
+    cmsUInt32Number PCS, nOut, i;
+    cmsFloat32Number Start, End;
+    cmsUInt16Number Steps;
+    int rc = 0;
+    const cmsUInt16Number N = 3, M = 3;
+
+    ctx = WatchDogContext(NULL);
+    if (ctx == NULL) {
+        Fail("Could not create a context for the iccMAX plug-in");
+        return 0;
+    }
+
+    if (!cmsPluginTHR(ctx, cmsGetIccMaxPlugin())) {
+        Fail("Could not register the iccMAX plug-in");
+        goto Done;
+    }
+
+    // Every step below is expected to succeed, so a signalled error must not be fatal: the
+    // testbed installs FatalErrorQuit globally, which would exit the whole run and make Fail
+    // unreachable. Restored at Done on every exit path.
+    cmsSetLogErrorHandler(ErrorReportingFunction);
+
+    // --- 1. A v5.0 CMYK -> Lab output sub-profile ---
+
+    hSub = cmsCreateProfilePlaceholder(ctx);
+    if (hSub == NULL) { Fail("Could not create the sub-profile placeholder"); goto Done; }
+
+    cmsSetProfileVersion(hSub, 5.0);
+    cmsSetDeviceClass(hSub, cmsSigOutputClass);
+    cmsSetColorSpace(hSub, cmsSigCmykData);
+    cmsSetPCS(hSub, cmsSigLabData);
+
+    // --- 2. swpt, four values, written through the registered tag ---
+
+    wSwpt = IccMaxAllocFloatArray(ctx, ICCMAX_AUTHOR_CHANS);
+    if (wSwpt == NULL) { Fail("Could not allocate the swpt array"); goto Done; }
+
+    for (i = 0; i < ICCMAX_AUTHOR_CHANS; i++)
+        wSwpt ->Values[i] = IccMaxAuthorSwpt[i];
+
+    if (!cmsWriteTag(hSub, IccMaxSigSpectralWhitePointTag, wSwpt)) {
+        Fail("Could not write swpt to the authored sub-profile");
+        goto Done;
+    }
+
+    // --- 3. svcn, N = M = 3 ---
+
+    wSvcn = IccMaxAllocSpectralViewingConditions(ctx, N, M);
+    if (wSvcn == NULL) { Fail("Could not allocate the svcn payload"); goto Done; }
+
+    wSvcn ->ObserverType    = 1;          // CIE 1931
+    wSvcn ->ObserverStart   = 400.0f;      // exact in float16
+    wSvcn ->ObserverEnd     = 500.0f;      // exact in float16
+    wSvcn ->IlluminantType  = 1;          // D50
+    wSvcn ->CCT             = 5000.0f;
+    wSvcn ->IlluminantStart = 400.0f;
+    wSvcn ->IlluminantEnd   = 500.0f;
+
+    // X vector 1..3, Y vector 11..13, Z vector 21..23, so a transposed writer or reader shows up
+    for (i = 0; i < 3u * N; i++)
+        wSvcn ->Observer[i] = (cmsFloat32Number) (1 + (i / N) * 10 + (i % N));
+
+    for (i = 0; i < M; i++)
+        wSvcn ->Illuminant[i] = (cmsFloat32Number) (0.5 + i);
+
+    wSvcn ->IlluminantXYZ.X = 96.42;  wSvcn ->IlluminantXYZ.Y = 100.0;
+    wSvcn ->IlluminantXYZ.Z = 82.49;
+    wSvcn ->SurroundXYZ.X   = 19.28;  wSvcn ->SurroundXYZ.Y   = 20.0;
+    wSvcn ->SurroundXYZ.Z   = 16.50;
+
+    if (!cmsWriteTag(hSub, IccMaxSigSpectralViewingConditionsTag, wSvcn)) {
+        Fail("Could not write svcn to the authored sub-profile");
+        goto Done;
+    }
+
+    // --- 4. A 4 -> 4 DToB3 whose single stage is a float identity CLUT ---
+
+    nOut = ICCMAX_AUTHOR_CHANS;
+
+    Lut = cmsPipelineAlloc(ctx, ICCMAX_AUTHOR_CHANS, ICCMAX_AUTHOR_CHANS);
+    if (Lut == NULL) { Fail("Could not allocate the DToB3 pipeline"); goto Done; }
+
+    Clut = cmsStageAllocCLutFloat(ctx, ICCMAX_AUTHOR_GRID, ICCMAX_AUTHOR_CHANS,
+                                  ICCMAX_AUTHOR_CHANS, NULL);
+    if (Clut == NULL) { Fail("Could not allocate the float CLUT stage"); goto Done; }
+
+    // NULL above gave a zero-filled grid. Sampling is what makes it an identity.
+    if (!cmsStageSampleCLutFloat(Clut, IccMaxIdentitySampler, &nOut, 0)) {
+        Fail("Could not sample the identity CLUT");
+        goto Done;
+    }
+
+    if (!cmsPipelineInsertStage(Lut, cmsAT_END, Clut)) {
+        Fail("Could not insert the CLUT stage");
+        goto Done;
+    }
+
+    Clut = NULL;    // the pipeline owns it now, and cmsPipelineFree at Done releases it
+
+    // Sanity: it must be an identity before it is written, or a failure after the round trip
+    // would not say whether authoring or serialization broke it.
+    if (!CheckIccMaxIdentityAt(Lut, 1.0f, 1.0f, 1.0f, 1.0f)) goto Done;
+
+    if (!cmsWriteTag(hSub, cmsSigDToB3Tag, Lut)) {
+        Fail("Could not write DToB3 to the authored sub-profile");
+        goto Done;
+    }
+
+    // --- 5. Serialize the sub-profile, then stamp its spectral PCS header fields ---
+
+    if (!cmsSaveProfileToMem(hSub, NULL, &SubSize) || SubSize == 0) {
+        Fail("Could not size-probe the authored sub-profile");
+        goto Done;
+    }
+
+    SubMem = (cmsUInt8Number*) malloc(SubSize);
+    if (SubMem == NULL) { Fail("malloc failed"); goto Done; }
+
+    if (!cmsSaveProfileToMem(hSub, SubMem, &SubSize)) {
+        Fail("Could not save the authored sub-profile to memory");
+        goto Done;
+    }
+
+    // No plug-in hook reaches the header, so the spectral PCS goes in here, on the serialized
+    // image, rather than through a tag. 400 and 700 are exact in float16.
+    if (!IccMaxSetSpectralPCSInMem(SubMem, SubSize, ICCMAX_AUTHOR_SPCS, 400.0f, 700.0f, 4)) {
+        Fail("IccMaxSetSpectralPCSInMem refused the authored v5.0 sub-profile");
+        goto Done;
+    }
+
+    // --- 6. Wrap it into an ICC.1 outer profile and serialize that ---
+
+    hOuter = cmsCreateProfilePlaceholder(ctx);
+    if (hOuter == NULL) { Fail("Could not create the outer profile placeholder"); goto Done; }
+
+    cmsSetProfileVersion(hOuter, 4.3);
+    cmsSetDeviceClass(hOuter, cmsSigOutputClass);
+    cmsSetColorSpace(hOuter, cmsSigCmykData);
+    cmsSetPCS(hOuter, cmsSigLabData);
+
+    if (!IccMaxEmbedProfile(hOuter, SubMem, SubSize)) {
+        Fail("IccMaxEmbedProfile failed");
+        goto Done;
+    }
+
+    if (!cmsSaveProfileToMem(hOuter, NULL, &OuterSize) || OuterSize == 0) {
+        Fail("Could not size-probe the outer profile");
+        goto Done;
+    }
+
+    OuterMem = (cmsUInt8Number*) malloc(OuterSize);
+    if (OuterMem == NULL) { Fail("malloc failed"); goto Done; }
+
+    if (!cmsSaveProfileToMem(hOuter, OuterMem, &OuterSize)) {
+        Fail("Could not save the outer profile to memory");
+        goto Done;
+    }
+
+    if (OuterSize <= SubSize) {
+        Fail("The outer profile (%u bytes) is no larger than the sub-profile it carries (%u)",
+             OuterSize, SubSize);
+        goto Done;
+    }
+
+    // --- 7. Reopen, unwrap, and check every part ---
+
+    hReadOuter = cmsOpenProfileFromMemTHR(ctx, OuterMem, OuterSize);
+    if (hReadOuter == NULL) { Fail("Could not reopen the outer profile"); goto Done; }
+
+    if (!IccMaxExtractProfile(hReadOuter, &Extracted, &ExtractedSize)) {
+        Fail("IccMaxExtractProfile failed");
+        goto Done;
+    }
+
+    // The wrap has to be byte-transparent, spectral PCS stamp included
+    if (ExtractedSize != SubSize) {
+        Fail("Extracted sub-profile is %u bytes, embedded %u", ExtractedSize, SubSize);
+        goto Done;
+    }
+
+    if (memcmp(Extracted, SubMem, SubSize) != 0) {
+        Fail("The embed/extract round trip changed the sub-profile bytes");
+        goto Done;
+    }
+
+    PCS = 0; Start = 0.0f; End = 0.0f; Steps = 0;
+
+    if (!IccMaxGetSpectralPCSFromMem(Extracted, ExtractedSize, &PCS, &Start, &End, &Steps)) {
+        Fail("IccMaxGetSpectralPCSFromMem refused the extracted sub-profile");
+        goto Done;
+    }
+
+    if (isnan(Start) || isnan(End)) {
+        Fail("Extracted spectral PCS range came back NaN");
+        goto Done;
+    }
+
+    if (PCS != ICCMAX_AUTHOR_SPCS || Start != 400.0f || End != 700.0f || Steps != 4) {
+        Fail("Extracted spectral PCS is 0x%x range %g..%g steps %u, expected 0x%x range "
+             "400..700 steps 4", PCS, Start, End, Steps, ICCMAX_AUTHOR_SPCS);
+        goto Done;
+    }
+
+    hReadSub = cmsOpenProfileFromMemTHR(ctx, Extracted, ExtractedSize);
+    if (hReadSub == NULL) { Fail("Could not open the extracted sub-profile"); goto Done; }
+
+    if (cmsGetDeviceClass(hReadSub) != cmsSigOutputClass ||
+        cmsGetColorSpace(hReadSub) != cmsSigCmykData ||
+        cmsGetPCS(hReadSub) != cmsSigLabData) {
+
+        Fail("The extracted sub-profile's class/spaces changed in the round trip");
+        goto Done;
+    }
+
+    // swpt
+    rSwpt = (const IccMaxFloatArray*) cmsReadTag(hReadSub, IccMaxSigSpectralWhitePointTag);
+    if (rSwpt == NULL) { Fail("Could not read swpt back from the authored profile"); goto Done; }
+
+    if (rSwpt ->nValues != ICCMAX_AUTHOR_CHANS) {
+        Fail("Authored swpt came back with %u values, expected %u",
+             rSwpt ->nValues, (cmsUInt32Number) ICCMAX_AUTHOR_CHANS);
+        goto Done;
+    }
+
+    for (i = 0; i < ICCMAX_AUTHOR_CHANS; i++) {
+
+        if (isnan(rSwpt ->Values[i])) {
+            Fail("Authored swpt value %u came back NaN", i);
+            goto Done;
+        }
+
+        // fl32 is bit-exact, so this is a tight comparison
+        if (fabs(rSwpt ->Values[i] - IccMaxAuthorSwpt[i]) > 1E-6) {
+            Fail("Authored swpt value %u came back %.7f, expected %.7f",
+                 i, rSwpt ->Values[i], IccMaxAuthorSwpt[i]);
+            goto Done;
+        }
+    }
+
+    // svcn: the step counts, and real values from both vectors -- not merely the dimensions
+    rSvcn = (const IccMaxSpectralViewingConditions*)
+                cmsReadTag(hReadSub, IccMaxSigSpectralViewingConditionsTag);
+    if (rSvcn == NULL) { Fail("Could not read svcn back from the authored profile"); goto Done; }
+
+    if (rSvcn ->ObserverSteps != N || rSvcn ->IlluminantSteps != M) {
+        Fail("Authored svcn came back N=%u M=%u, expected N=%u M=%u",
+             rSvcn ->ObserverSteps, rSvcn ->IlluminantSteps, N, M);
+        goto Done;
+    }
+
+    if (isnan(rSvcn ->Observer[0]) || rSvcn ->Observer[0] != wSvcn ->Observer[0]) {
+        Fail("Authored svcn Observer[0] came back %g, expected %g",
+             rSvcn ->Observer[0], wSvcn ->Observer[0]);
+        goto Done;
+    }
+
+    if (isnan(rSvcn ->Illuminant[0]) || rSvcn ->Illuminant[0] != wSvcn ->Illuminant[0]) {
+        Fail("Authored svcn Illuminant[0] came back %g, expected %g",
+             rSvcn ->Illuminant[0], wSvcn ->Illuminant[0]);
+        goto Done;
+    }
+
+    // DToB3
+    rLut = (cmsPipeline*) cmsReadTag(hReadSub, cmsSigDToB3Tag);
+    if (rLut == NULL) { Fail("Could not read DToB3 back from the authored profile"); goto Done; }
+
+    if (cmsPipelineInputChannels(rLut) != ICCMAX_AUTHOR_CHANS ||
+        cmsPipelineOutputChannels(rLut) != ICCMAX_AUTHOR_CHANS) {
+
+        Fail("Authored DToB3 came back %u -> %u, expected %u -> %u",
+             cmsPipelineInputChannels(rLut), cmsPipelineOutputChannels(rLut),
+             (cmsUInt32Number) ICCMAX_AUTHOR_CHANS, (cmsUInt32Number) ICCMAX_AUTHOR_CHANS);
+        goto Done;
+    }
+
+    // --- 8. And it is genuinely an identity, not a zero-filled grid ---
+    //
+    // The all-1.0 corner is the load-bearing probe: a zero-filled CLUT -- what
+    // cmsStageAllocCLutFloat alone, without the sampling above, would have produced -- returns
+    // 0 at the all-0.0 corner too, so that corner alone proves nothing.
+    if (!CheckIccMaxIdentityAt(rLut, 0.0f, 0.0f, 0.0f, 0.0f)) goto Done;
+    if (!CheckIccMaxIdentityAt(rLut, 1.0f, 1.0f, 1.0f, 1.0f)) goto Done;
+    if (!CheckIccMaxIdentityAt(rLut, 0.25f, 0.5f, 0.7f, 0.1f)) goto Done;
+
+    rc = 1;
+
+Done:
+    cmsSetLogErrorHandler(FatalErrorQuit);
+
+    // Extracted came from _cmsMalloc against hReadOuter's context, which is ctx, so it has to
+    // go back through _cmsFree and before cmsDeleteContext below.
+    if (Extracted != NULL) _cmsFree(ctx, Extracted);
+
+    if (OuterMem != NULL) free(OuterMem);
+    if (SubMem != NULL) free(SubMem);
+
+    // cmsWriteTag duplicated the pipeline (Type_MPE_Dup calls cmsPipelineDup), so this one is
+    // still ours. Clut is non-NULL only if cmsPipelineInsertStage never took it.
+    if (Clut != NULL) cmsStageFree(Clut);
+    if (Lut != NULL) cmsPipelineFree(Lut);
+
+    if (wSvcn != NULL) IccMaxFreeSpectralViewingConditions(wSvcn);
+    if (wSwpt != NULL) IccMaxFreeFloatArray(wSwpt);
+
+    if (hReadSub != NULL) cmsCloseProfile(hReadSub);
+    if (hReadOuter != NULL) cmsCloseProfile(hReadOuter);
+    if (hOuter != NULL) cmsCloseProfile(hOuter);
+    if (hSub != NULL) cmsCloseProfile(hSub);
+
+    if (ctx != NULL) cmsDeleteContext(ctx);
+
+    return rc;
+}
+
+// --------------------------------------------------------------------------------------------------
 // P E R F O R M A N C E   C H E C K S
 // --------------------------------------------------------------------------------------------------
 
@@ -11128,6 +11537,7 @@ int main(int argc, char* argv[])
     Check("iccMAX spectral viewing conditions round trip via plug-in", CheckIccMaxSpectralViewingConditions);
     Check("iccMAX spectral viewing conditions against fixture via plug-in", CheckIccMaxSvcnAgainstFixture);
     Check("iccMAX spectral PCS header fields on a memory buffer", CheckIccMaxSpectralPCSHeader);
+    Check("iccMAX hybrid printer profile authored end to end via plug-in", CheckIccMaxAuthorHybridProfile);
     }
 
     if (DoPluginTests)

@@ -367,6 +367,84 @@ void Type_EmbeddedProfile_Free(struct _cms_typehandler_struct* self, void* Ptr)
     _cmsFree(self ->ContextID, Ptr);
 }
 
+// Wrap a saved ICC.2 profile image as the payload of the 'ICC5' tag, and recover it.
+//
+// Both go through the registered tag rather than through cmsWriteRawTag / cmsReadRawTag, which
+// is what the swpt accessors above had to do. The difference is that swpt has three permitted
+// on-disk encodings and only two of them are registered here, so dispatching on the raw type
+// signature was the only way to cover all three; ICC5 has exactly one type, 'ICCp', and the
+// registered path already carries a variable-length payload correctly -- Type_EmbeddedProfile's
+// Write and Dup both take the length from cmsICCData->len rather than from the nItems they are
+// handed, which is TagDescriptor->ElemCount and a fixed 1. So there is nothing the raw route
+// would add here, and going through cmsWriteTag/cmsReadTag exercises the handlers themselves.
+//
+// The tag content on disk is the 'ICCp' type signature plus four reserved bytes and then the
+// profile image, so a raw-tag caller would have to skip 8 bytes; a registered-path caller does
+// not, because _cmsReadTypeBase has already consumed them by the time the handler is called.
+
+cmsBool IccMaxEmbedProfile(cmsHPROFILE hOuter, const void* SubProfile, cmsUInt32Number Size)
+{
+    cmsContext ContextID;
+    cmsICCData* Embedded;
+    cmsBool rc;
+
+    if (hOuter == NULL || SubProfile == NULL) return FALSE;
+
+    // A profile is at least a 128 byte header plus a 4 byte tag count. Same floor
+    // Type_EmbeddedProfile_Read applies coming back the other way, so a payload that passes
+    // here is one that can be read again.
+    if (Size < 132) return FALSE;
+    if (Size > INT_MAX) return FALSE;
+
+    ContextID = cmsGetProfileContextID(hOuter);
+
+    // cmsICCData ends in a one byte data[] flexible member, hence the -1
+    Embedded = (cmsICCData*) _cmsMalloc(ContextID, sizeof(cmsICCData) + Size - 1);
+    if (Embedded == NULL) return FALSE;
+
+    Embedded ->len  = Size;
+    Embedded ->flag = 0;
+    memcpy(Embedded ->data, SubProfile, Size);
+
+    // cmsWriteTag duplicates through Type_EmbeddedProfile_Dup and never takes ownership, so
+    // this buffer stays ours to release on both the success and the failure path.
+    rc = cmsWriteTag(hOuter, ICCMAX_SigEmbeddedV5Tag, Embedded);
+
+    _cmsFree(ContextID, Embedded);
+    return rc;
+}
+
+// *SubProfile is allocated with _cmsMalloc against hOuter's context; release it with
+// _cmsFree(cmsGetProfileContextID(hOuter), *SubProfile). It is a copy and not the tag object's
+// own bytes on purpose: the object belongs to hOuter and dies with cmsCloseProfile, whereas an
+// extracted sub-profile normally has to outlive the container it came out of.
+cmsBool IccMaxExtractProfile(cmsHPROFILE hOuter, void** SubProfile, cmsUInt32Number* Size)
+{
+    const cmsICCData* Embedded;
+    void* Copy;
+
+    // Nothing useful can be done with a buffer whose length the caller never receives, so
+    // unlike the optional out-parameters of the header accessors both of these are required.
+    if (SubProfile == NULL || Size == NULL) return FALSE;
+
+    *SubProfile = NULL;
+    *Size = 0;
+
+    if (hOuter == NULL) return FALSE;
+
+    Embedded = (const cmsICCData*) cmsReadTag(hOuter, ICCMAX_SigEmbeddedV5Tag);
+    if (Embedded == NULL) return FALSE;
+
+    if (Embedded ->len < 132) return FALSE;
+
+    Copy = _cmsDupMem(cmsGetProfileContextID(hOuter), Embedded ->data, Embedded ->len);
+    if (Copy == NULL) return FALSE;
+
+    *SubProfile = Copy;
+    *Size = Embedded ->len;
+    return TRUE;
+}
+
 
 // ********************************************************************************
 // ICC.2 formulaCurveSegment function types 0003h to 0007h

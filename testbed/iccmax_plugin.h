@@ -45,6 +45,22 @@
 #define ICCMAX_SigEmbeddedProfileType ((cmsTagTypeSignature) 0x49434370)  // 'ICCp'
 #define ICCMAX_SigEmbeddedV5Tag       ((cmsTagSignature)     0x49434335)  // 'ICC5'
 
+// Wrap a saved ICC.2 profile image as the payload of an 'ICC5' tag on an ICC.1 profile, and
+// recover it. Both work through the registered ICC5 tag and its 'ICCp' tag type, so neither
+// caller sees the 8 byte type-signature-plus-reserved prefix that the tag content carries on
+// disk -- the framework consumes it. IccMaxEmbedProfile copies the bytes; cmsWriteTag never
+// takes ownership, so the caller's buffer stays the caller's.
+//
+// IccMaxExtractProfile allocates *SubProfile with _cmsMalloc against hOuter's context, and the
+// caller owns it: release it with _cmsFree(cmsGetProfileContextID(hOuter), *SubProfile). It is
+// a copy of the tag object's bytes, not the object's own storage, so it outlives hOuter. Both
+// out-parameters are required, unlike the optional ones on the header accessors below: a buffer
+// without its length is of no use to anyone.
+CMSAPI cmsBool CMSEXPORT IccMaxEmbedProfile(cmsHPROFILE hOuter, const void* SubProfile,
+                                             cmsUInt32Number Size);
+CMSAPI cmsBool CMSEXPORT IccMaxExtractProfile(cmsHPROFILE hOuter, void** SubProfile,
+                                               cmsUInt32Number* Size);
+
 // The lcms parametric curve types this plug-in defines, being ICC.2 formulaCurveSegment
 // function types 3 to 7 under the "lcms type = ICC type + 6" convention core already uses
 // for ICC types 0, 1 and 2.
