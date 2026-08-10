@@ -9590,8 +9590,13 @@ Done:
 // --------------------------------------------------------------------------------------------------
 
 // N and M are deliberately different, and the three observer vectors deliberately hold
-// different values (X = 1..5, Y = 11..15, Z = 21..25), so a transposed X/Y/Z ordering or a
-// swapped N/M cannot pass unnoticed. Both XYZ triples are distinct from each other too.
+// different values (X = 1..5, Y = 11..15, Z = 21..25). That does not by itself prove the
+// wire ordering is X-then-Y-then-Z -- any permutation applied consistently by both writer
+// and reader round-trips cleanly regardless. What it actually catches is a writer/reader
+// *disagreement* about where each vector lives (e.g. one side transposing, the other not).
+// The ordering itself is pinned separately, by CheckIccMaxSvcnAgainstFixture's
+// Observer[0]/[81]/[162] checks against reference bytes. Both XYZ triples are distinct from
+// each other too, so an illuminant/surround swap would also be caught here.
 static
 int CheckIccMaxSpectralViewingConditions(void)
 {
@@ -9605,6 +9610,19 @@ int CheckIccMaxSpectralViewingConditions(void)
     cmsUInt32Number i;
     int rc = 0;
     const cmsUInt16Number N = 5, M = 7;
+
+    // Regression-test state for the hand-corrupted N == 0x0100 bounds probe further down.
+    // ICC.2 reuses the 'svcn' FourCC for both cmsSigSpectralViewingConditionsTag (the tag
+    // directory entry) and cmsSigSpectralViewingConditionsType (the type header at the start
+    // of the tag's own data), so a bare 4-byte search for 'svcn' would match the directory
+    // entry first -- it precedes the tag data pool and is followed by a nonzero file offset,
+    // not by the type header's 4 reserved zero bytes. Searching for the 8-byte pattern
+    // (signature + reserved) lands on the type header instead.
+    static const cmsUInt8Number svcnSig[8] = { 0x73, 0x76, 0x63, 0x6E, 0x00, 0x00, 0x00, 0x00 };
+    cmsUInt8Number* corrupted = NULL;
+    cmsHPROFILE hBad = NULL;
+    IccMaxSpectralViewingConditions* rBad = NULL;
+    cmsUInt32Number sigOffset, k;
 
     ctx = WatchDogContext(NULL);
     if (ctx == NULL) {
@@ -9676,13 +9694,14 @@ int CheckIccMaxSpectralViewingConditions(void)
 
     cmsCloseProfile(h);
     h = cmsOpenProfileFromMemTHR(ctx, Mem, Size);
-    free(Mem);
-    Mem = NULL;
 
     if (h == NULL) {
         Fail("Could not reopen the svcn profile from memory");
         goto Done;
     }
+
+    // Mem/Size are kept (not freed here) -- the bounds-rejection probe further down hand-
+    // corrupts a copy of these same serialized bytes.
 
     // ICC.2 Table 69 (as corrected): the whole tag is 60 + 12N + 4M bytes
     Expected = 60u + 12u * N + 4u * M;
@@ -9772,11 +9791,61 @@ int CheckIccMaxSpectralViewingConditions(void)
         goto Done;
     }
 
+    // Regression test for the two-stage bounds guard in Type_SpectralViewingConditions_Read:
+    // hand-corrupt the already-serialized tag's N field to claim 256 observer steps -- 0x0100,
+    // inside a tag whose actual on-disk size cannot possibly hold 256*3 float32 values plus
+    // the illuminant that follows -- and confirm the reader rejects it rather than reading M
+    // (or anything past it) from unvalidated bytes. This is the case the bounds check exists
+    // for: a guard that silently dropped its "+ 16u" (or "+ 24u") term would still pass every
+    // other check in this file, because none of them touch an undersized tag.
+    sigOffset = (cmsUInt32Number) -1;
+    for (k = 0; k + 8 <= Size; k++) {
+        if (memcmp(Mem + k, svcnSig, 8) == 0) { sigOffset = k; break; }
+    }
+
+    if (sigOffset == (cmsUInt32Number) -1) {
+        Fail("Could not locate the svcn type header in the serialized profile");
+        goto Done;
+    }
+
+    corrupted = (cmsUInt8Number*) malloc(Size);
+    if (corrupted == NULL) { Fail("malloc failed"); goto Done; }
+    memcpy(corrupted, Mem, Size);
+
+    // Signature (4) + reserved (4) + observerType (4) + ObserverStart (2) + ObserverEnd (2)
+    // puts N's big-endian uInt16 at offset +16 from the signature.
+    corrupted[sigOffset + 16] = 0x01;
+    corrupted[sigOffset + 17] = 0x00;              // N = 256
+
+    // Rejection goes through cmsSignalError, which the installed FatalErrorQuit handler
+    // treats as fatal, so it is swapped out for the non-fatal ErrorReportingFunction for the
+    // duration of this probe alone. No goto/return/Fail between the swap and the restore, so
+    // the handler cannot be left non-fatal on any exit path from this window.
+    cmsSetLogErrorHandler(ErrorReportingFunction);
+    TrappedError = FALSE;
+    SimultaneousErrors = 0;
+
+    hBad = cmsOpenProfileFromMemTHR(ctx, corrupted, Size);
+    if (hBad != NULL) {
+        rBad = (IccMaxSpectralViewingConditions*) cmsReadTag(hBad, IccMaxSigSpectralViewingConditionsTag);
+    }
+
+    cmsSetLogErrorHandler(FatalErrorQuit);
+    TrappedError = FALSE;
+    SimultaneousErrors = 0;
+
+    if (rBad != NULL) {
+        Fail("svcn declaring N = 0x0100 inside an undersized tag was not rejected");
+        goto Done;
+    }
+
     rc = 1;
 
 Done:
     cmsSetLogErrorHandler(FatalErrorQuit);
 
+    if (corrupted != NULL) free(corrupted);
+    if (hBad != NULL) cmsCloseProfile(hBad);
     if (Mem != NULL) free(Mem);
     if (w != NULL) IccMaxFreeSpectralViewingConditions(w);
     if (h != NULL) cmsCloseProfile(h);

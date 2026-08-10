@@ -1049,7 +1049,11 @@ void* Type_SpectralViewingConditions_Dup(struct _cms_typehandler_struct* self, c
     const IccMaxSpectralViewingConditions* sv = (const IccMaxSpectralViewingConditions*) Ptr;
     IccMaxSpectralViewingConditions* New;
 
-    if (sv == NULL) return NULL;
+    // Same guard Write applies. Not reachable from profile bytes -- a struct that made it
+    // this far from a Read always has both arrays -- but cmsWriteTag calls Dup before Write,
+    // so Write's own guard cannot cover a caller-built struct with Observer/Illuminant NULL
+    // and a nonzero step count, which would otherwise crash the memcpy below.
+    if (sv == NULL || sv ->Observer == NULL || sv ->Illuminant == NULL) return NULL;
 
     // Lengths come from the object's own ObserverSteps/IlluminantSteps, never from n, which
     // is TagDescriptor->ElemCount, a fixed constant (1 for this tag) -- using n here once
