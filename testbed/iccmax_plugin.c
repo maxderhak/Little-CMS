@@ -173,7 +173,7 @@ void* Type_MPEextclut_Read(struct _cms_typehandler_struct* self, cmsIOHANDLER* i
     // Remember that this element came in as an extendedCLUT, so a writer can find this
     // handler again. Implements stays at cmsSigCLutElemType: it *is* a CLUT, it is merely
     // encoded differently, and the pipeline optimizers key off Implements.
-    mpe ->Type = ICCMAX_SigExtCLutElemType;
+    mpe ->Type = IccMaxSigExtCLutElemType;
 
     clut = (_cmsStageCLutData*) mpe ->Data;
 
@@ -408,7 +408,7 @@ cmsBool IccMaxEmbedProfile(cmsHPROFILE hOuter, const void* SubProfile, cmsUInt32
 
     // cmsWriteTag duplicates through Type_EmbeddedProfile_Dup and never takes ownership, so
     // this buffer stays ours to release on both the success and the failure path.
-    rc = cmsWriteTag(hOuter, ICCMAX_SigEmbeddedV5Tag, Embedded);
+    rc = cmsWriteTag(hOuter, IccMaxSigEmbeddedV5Tag, Embedded);
 
     _cmsFree(ContextID, Embedded);
     return rc;
@@ -432,7 +432,7 @@ cmsBool IccMaxExtractProfile(cmsHPROFILE hOuter, void** SubProfile, cmsUInt32Num
 
     if (hOuter == NULL) return FALSE;
 
-    Embedded = (const cmsICCData*) cmsReadTag(hOuter, ICCMAX_SigEmbeddedV5Tag);
+    Embedded = (const cmsICCData*) cmsReadTag(hOuter, IccMaxSigEmbeddedV5Tag);
     if (Embedded == NULL) return FALSE;
 
     if (Embedded ->len < 132) return FALSE;
@@ -1255,7 +1255,7 @@ cmsBool IccMaxSetSpectralPCSInMem(void* Profile, cmsUInt32Number Size,
 // The plug-in list
 // ********************************************************************************
 //
-// Chained back to front so that cmsGetIccMaxPlugin can return a single head. Every entry
+// Chained back to front so that IccMaxGetPlugin can return a single head. Every entry
 // is an addition: none of these nine signatures is handled by the library.
 
 static cmsPluginParametricCurves IccMaxCurvesPlugin = {
@@ -1272,15 +1272,15 @@ static cmsPluginTag IccMaxEmbeddedTagPlugin = {
 
     { cmsPluginMagicNumber, 2060, cmsPluginTagSig, (cmsPluginBase*) &IccMaxCurvesPlugin },
 
-    ICCMAX_SigEmbeddedV5Tag,
-    { 1, 1, { ICCMAX_SigEmbeddedProfileType }, NULL }
+    IccMaxSigEmbeddedV5Tag,
+    { 1, 1, { IccMaxSigEmbeddedProfileType }, NULL }
 };
 
 static cmsPluginTagType IccMaxEmbeddedTypePlugin = {
 
     { cmsPluginMagicNumber, 2060, cmsPluginTagTypeSig, (cmsPluginBase*) &IccMaxEmbeddedTagPlugin },
 
-    { ICCMAX_SigEmbeddedProfileType,
+    { IccMaxSigEmbeddedProfileType,
       Type_EmbeddedProfile_Read, Type_EmbeddedProfile_Write,
       Type_EmbeddedProfile_Dup,  Type_EmbeddedProfile_Free, NULL, 0 }
 };
@@ -1290,7 +1290,7 @@ static cmsPluginMultiProcessElement IccMaxExtClutPlugin = {
     { cmsPluginMagicNumber, 2060, cmsPluginMultiProcessElementSig,
       (cmsPluginBase*) &IccMaxEmbeddedTypePlugin },
 
-    { (cmsTagTypeSignature) ICCMAX_SigExtCLutElemType,
+    { (cmsTagTypeSignature) IccMaxSigExtCLutElemType,
       Type_MPEextclut_Read, Type_MPEextclut_Write,
       MPEextclut_Dup, MPEextclut_Free, NULL, 0 }
 };
@@ -1344,7 +1344,7 @@ static cmsPluginTag IccMaxSpectralViewingConditionsTagPlugin = {
     { 1, 1, { IccMaxSigSpectralViewingConditionsType }, NULL }
 };
 
-cmsPluginBase* CMSEXPORT cmsGetIccMaxPlugin(void)
+cmsPluginBase* CMSEXPORT IccMaxGetPlugin(void)
 {
     return (cmsPluginBase*) &IccMaxSpectralViewingConditionsTagPlugin;
 }
