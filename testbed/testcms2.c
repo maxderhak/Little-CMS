@@ -9586,6 +9586,340 @@ Done:
 }
 
 // --------------------------------------------------------------------------------------------------
+// spectralViewingConditionsTag ('svcn'), via the plug-in in iccmax_plugin.c
+// --------------------------------------------------------------------------------------------------
+
+// N and M are deliberately different, and the three observer vectors deliberately hold
+// different values (X = 1..5, Y = 11..15, Z = 21..25), so a transposed X/Y/Z ordering or a
+// swapped N/M cannot pass unnoticed. Both XYZ triples are distinct from each other too.
+static
+int CheckIccMaxSpectralViewingConditions(void)
+{
+    cmsContext ctx = NULL;
+    cmsHPROFILE h = NULL;
+    IccMaxSpectralViewingConditions* w = NULL;
+    IccMaxSpectralViewingConditions* r;
+    cmsUInt8Number* Mem = NULL;
+    cmsUInt32Number Size = 0;
+    cmsUInt32Number TagSize, Expected;
+    cmsUInt32Number i;
+    int rc = 0;
+    const cmsUInt16Number N = 5, M = 7;
+
+    ctx = WatchDogContext(NULL);
+    if (ctx == NULL) {
+        Fail("Could not create a context for the iccMAX plug-in");
+        return 0;
+    }
+
+    if (!cmsPluginTHR(ctx, cmsGetIccMaxPlugin())) {
+        Fail("Could not register the iccMAX plug-in");
+        goto Done;
+    }
+
+    // Everything below is expected to succeed, so a signalled error must not be fatal: the
+    // testbed installs FatalErrorQuit globally, which would exit the whole run and make Fail
+    // unreachable. Restored on every exit path.
+    cmsSetLogErrorHandler(ErrorReportingFunction);
+
+    w = IccMaxAllocSpectralViewingConditions(ctx, N, M);
+    if (w == NULL) {
+        Fail("Could not allocate an IccMaxSpectralViewingConditions of N=%u M=%u", N, M);
+        goto Done;
+    }
+
+    w ->ObserverType    = 1;            // CIE 1931
+    w ->ObserverStart   = 400.0f;        // exact in float16
+    w ->ObserverEnd     = 500.0f;        // exact in float16
+    w ->IlluminantType  = 9;            // black body defined by CCT
+    w ->CCT             = 5000.0f;       // exact in float32
+    w ->IlluminantStart = 380.0f;        // exact in float16
+    w ->IlluminantEnd   = 440.0f;        // exact in float16
+
+    // X vector 1..5, Y vector 11..15, Z vector 21..25
+    for (i = 0; i < 3u * N; i++)
+        w ->Observer[i] = (cmsFloat32Number) (1 + (i / N) * 10 + (i % N));
+
+    for (i = 0; i < M; i++)
+        w ->Illuminant[i] = (cmsFloat32Number) (0.5 + i);
+
+    w ->IlluminantXYZ.X = 96.42;  w ->IlluminantXYZ.Y = 100.0; w ->IlluminantXYZ.Z = 82.49;
+    w ->SurroundXYZ.X   = 19.28;  w ->SurroundXYZ.Y   = 20.0;  w ->SurroundXYZ.Z   = 16.50;
+
+    h = cmsCreateProfilePlaceholder(ctx);
+    if (h == NULL) {
+        Fail("Could not create a placeholder profile");
+        goto Done;
+    }
+
+    cmsSetProfileVersion(h, 5.0);
+
+    if (!cmsWriteTag(h, IccMaxSigSpectralViewingConditionsTag, w)) {
+        Fail("Could not write svcn");
+        goto Done;
+    }
+
+    // Round trip through a real serialization, not just the in-memory tag cache: save to
+    // memory (sized first, then written), close, and reopen from those bytes.
+    if (!cmsSaveProfileToMem(h, NULL, &Size) || Size == 0) {
+        Fail("Could not size-probe the svcn profile");
+        goto Done;
+    }
+
+    Mem = (cmsUInt8Number*) malloc(Size);
+    if (Mem == NULL) { Fail("malloc failed"); goto Done; }
+
+    if (!cmsSaveProfileToMem(h, Mem, &Size)) {
+        Fail("Could not save the svcn profile to memory");
+        goto Done;
+    }
+
+    cmsCloseProfile(h);
+    h = cmsOpenProfileFromMemTHR(ctx, Mem, Size);
+    free(Mem);
+    Mem = NULL;
+
+    if (h == NULL) {
+        Fail("Could not reopen the svcn profile from memory");
+        goto Done;
+    }
+
+    // ICC.2 Table 69 (as corrected): the whole tag is 60 + 12N + 4M bytes
+    Expected = 60u + 12u * N + 4u * M;
+    TagSize = cmsReadRawTag(h, IccMaxSigSpectralViewingConditionsTag, NULL, 0);
+    if (TagSize != Expected) {
+        Fail("svcn tag is %u bytes, expected %u", TagSize, Expected);
+        goto Done;
+    }
+
+    r = (IccMaxSpectralViewingConditions*) cmsReadTag(h, IccMaxSigSpectralViewingConditionsTag);
+    if (r == NULL) {
+        Fail("Could not read svcn back");
+        goto Done;
+    }
+
+    if (r ->ObserverSteps != N || r ->IlluminantSteps != M) {
+        Fail("svcn steps came back as N=%u M=%u, expected N=%u M=%u",
+             r ->ObserverSteps, r ->IlluminantSteps, N, M);
+        goto Done;
+    }
+
+    if (r ->ObserverType != w ->ObserverType || r ->IlluminantType != w ->IlluminantType) {
+        Fail("svcn observer or illuminant type changed");
+        goto Done;
+    }
+
+    // 400/500/380/440 are all exactly representable in float16, so this compares exactly.
+    if (isnan(r ->ObserverStart) || isnan(r ->ObserverEnd) ||
+        isnan(r ->IlluminantStart) || isnan(r ->IlluminantEnd) ||
+        r ->ObserverStart != w ->ObserverStart || r ->ObserverEnd != w ->ObserverEnd ||
+        r ->IlluminantStart != w ->IlluminantStart || r ->IlluminantEnd != w ->IlluminantEnd) {
+
+        Fail("svcn spectral range changed: got %g..%g / %g..%g, expected %g..%g / %g..%g",
+             r ->ObserverStart, r ->ObserverEnd, r ->IlluminantStart, r ->IlluminantEnd,
+             w ->ObserverStart, w ->ObserverEnd, w ->IlluminantStart, w ->IlluminantEnd);
+        goto Done;
+    }
+
+    // 5000 is exact in float32, so this compares exactly too.
+    if (isnan(r ->CCT) || r ->CCT != w ->CCT) {
+        Fail("svcn CCT changed: got %g, expected %g", r ->CCT, w ->CCT);
+        goto Done;
+    }
+
+    for (i = 0; i < 3u * N; i++) {
+
+        if (isnan(r ->Observer[i])) {
+            Fail("svcn observer value %u came back NaN", i);
+            goto Done;
+        }
+
+        if (r ->Observer[i] != w ->Observer[i]) {
+            Fail("svcn observer value %u changed: got %g expected %g",
+                 i, r ->Observer[i], w ->Observer[i]);
+            goto Done;
+        }
+    }
+
+    for (i = 0; i < M; i++) {
+
+        if (isnan(r ->Illuminant[i])) {
+            Fail("svcn illuminant value %u came back NaN", i);
+            goto Done;
+        }
+
+        if (r ->Illuminant[i] != w ->Illuminant[i]) {
+            Fail("svcn illuminant value %u changed: got %g expected %g",
+                 i, r ->Illuminant[i], w ->Illuminant[i]);
+            goto Done;
+        }
+    }
+
+    // These two triples are stored as float32Number[3] per the corrected Table 69, while
+    // cmsCIEXYZ is float64, so the round trip loses only float64 -> float32 precision.
+    if (isnan(r ->IlluminantXYZ.X) || isnan(r ->IlluminantXYZ.Y) || isnan(r ->IlluminantXYZ.Z) ||
+        isnan(r ->SurroundXYZ.X)   || isnan(r ->SurroundXYZ.Y)   || isnan(r ->SurroundXYZ.Z) ||
+        fabs(r ->IlluminantXYZ.X - w ->IlluminantXYZ.X) > 1E-5 ||
+        fabs(r ->IlluminantXYZ.Y - w ->IlluminantXYZ.Y) > 1E-5 ||
+        fabs(r ->IlluminantXYZ.Z - w ->IlluminantXYZ.Z) > 1E-5 ||
+        fabs(r ->SurroundXYZ.X   - w ->SurroundXYZ.X)   > 1E-5 ||
+        fabs(r ->SurroundXYZ.Y   - w ->SurroundXYZ.Y)   > 1E-5 ||
+        fabs(r ->SurroundXYZ.Z   - w ->SurroundXYZ.Z)   > 1E-5) {
+
+        Fail("svcn XYZ triples changed: illuminant %g/%g/%g, surround %g/%g/%g",
+             r ->IlluminantXYZ.X, r ->IlluminantXYZ.Y, r ->IlluminantXYZ.Z,
+             r ->SurroundXYZ.X, r ->SurroundXYZ.Y, r ->SurroundXYZ.Z);
+        goto Done;
+    }
+
+    rc = 1;
+
+Done:
+    cmsSetLogErrorHandler(FatalErrorQuit);
+
+    if (Mem != NULL) free(Mem);
+    if (w != NULL) IccMaxFreeSpectralViewingConditions(w);
+    if (h != NULL) cmsCloseProfile(h);
+    if (ctx != NULL) cmsDeleteContext(ctx);
+
+    return rc;
+}
+
+// Reads the committed hybrid printer fixture's embedded svcn tag and checks it against values
+// produced by the reference implementation, not by our own writer.
+static
+int CheckIccMaxSvcnAgainstFixture(void)
+{
+    cmsContext ctx = NULL;
+    cmsHPROFILE hOuter = NULL;
+    cmsHPROFILE hEmbedded = NULL;
+    const cmsICCData* Embedded;
+    IccMaxSpectralViewingConditions* sv;
+    int rc = 0;
+
+    ctx = WatchDogContext(NULL);
+    if (ctx == NULL) {
+        Fail("Could not create a context for the iccMAX plug-in");
+        return 0;
+    }
+
+    if (!cmsPluginTHR(ctx, cmsGetIccMaxPlugin())) {
+        Fail("Could not register the iccMAX plug-in");
+        goto Done;
+    }
+
+    cmsSetLogErrorHandler(ErrorReportingFunction);
+
+    hOuter = cmsOpenProfileFromFileTHR(ctx, "HybridPrinterCMYK_small.icc", "r");
+    if (hOuter == NULL) {
+        Fail("Could not open HybridPrinterCMYK_small.icc");
+        goto Done;
+    }
+
+    Embedded = (const cmsICCData*) cmsReadTag(hOuter, ICCMAX_SigEmbeddedV5Tag);
+    if (Embedded == NULL) {
+        Fail("Could not read the ICC5 tag");
+        goto Done;
+    }
+
+    hEmbedded = cmsOpenProfileFromMemTHR(ctx, Embedded ->data, Embedded ->len);
+    if (hEmbedded == NULL) {
+        Fail("Could not open the embedded ICC.2 profile");
+        goto Done;
+    }
+
+    sv = (IccMaxSpectralViewingConditions*) cmsReadTag(hEmbedded, IccMaxSigSpectralViewingConditionsTag);
+    if (sv == NULL) {
+        Fail("Fixture sub-profile has no readable svcn");
+        goto Done;
+    }
+
+    if (sv ->ObserverType != 1) {
+        Fail("Fixture observer type is %u, expected 1 (CIE 1931)", sv ->ObserverType);
+        goto Done;
+    }
+
+    if (sv ->ObserverSteps != 81 || sv ->IlluminantSteps != 81) {
+        Fail("Fixture svcn steps are N=%u M=%u, expected 81 and 81",
+             sv ->ObserverSteps, sv ->IlluminantSteps);
+        goto Done;
+    }
+
+    // 380 and 780 are exactly representable in float16, so this compares exactly (modulo
+    // floating point noise).
+    if (isnan(sv ->ObserverStart) || isnan(sv ->ObserverEnd) ||
+        fabs(sv ->ObserverStart - 380.0) > 1E-5 || fabs(sv ->ObserverEnd - 780.0) > 1E-5) {
+
+        Fail("Fixture observer range is %g..%g, expected 380..780",
+             sv ->ObserverStart, sv ->ObserverEnd);
+        goto Done;
+    }
+
+    // The first CMF triple is the textbook CIE 1931 tristimulus at 380 nm, which also proves
+    // the matrix is stored as X-vector then Y then Z rather than interleaved: these three
+    // values come from the heads of three separate vectors, at offsets 0, N and 2N.
+    if (isnan(sv ->Observer[0]) || isnan(sv ->Observer[81]) || isnan(sv ->Observer[162]) ||
+        fabs(sv ->Observer[0]   - 0.001370) > 1E-5 ||
+        fabs(sv ->Observer[81]  - 0.000040) > 1E-5 ||
+        fabs(sv ->Observer[162] - 0.006450) > 1E-5) {
+
+        Fail("Fixture first CMF triple is %g/%g/%g, expected 0.001370/0.000040/0.006450",
+             sv ->Observer[0], sv ->Observer[81], sv ->Observer[162]);
+        goto Done;
+    }
+
+    if (sv ->IlluminantType != 1) {
+        Fail("Fixture illuminant type is %u, expected 1 (D50)", sv ->IlluminantType);
+        goto Done;
+    }
+
+    // 5000 is exact in float32, so this compares exactly (modulo floating point noise).
+    if (isnan(sv ->CCT) || fabs(sv ->CCT - 5000.0) > 1E-5) {
+        Fail("Fixture CCT is %g, expected 5000", sv ->CCT);
+        goto Done;
+    }
+
+    if (isnan(sv ->Illuminant[0]) || fabs(sv ->Illuminant[0] - 24.457) > 1E-2) {
+        Fail("Fixture illuminant[0] is %g, expected about 24.457", sv ->Illuminant[0]);
+        goto Done;
+    }
+
+    // Both trailing triples are pinned to the fixture's actual bytes decoded as float32:
+    // 154.279 / 160.0 / 131.949, i.e. D50 at 160 cd/m2. Checking a specific value rather than
+    // just Y > 0 matters here: decoding these same bytes as s15Fixed16 instead of float32
+    // would give a physically nonsensical near-equal-energy white at Y = 17184, which a bare
+    // Y > 0 check could not catch. In this fixture the illuminant and surround triples happen
+    // to be byte-identical, so this test cannot detect an illuminant/surround swap -- only
+    // that both decode to the right value.
+    if (isnan(sv ->IlluminantXYZ.X) || isnan(sv ->IlluminantXYZ.Y) || isnan(sv ->IlluminantXYZ.Z) ||
+        isnan(sv ->SurroundXYZ.X)   || isnan(sv ->SurroundXYZ.Y)   || isnan(sv ->SurroundXYZ.Z) ||
+        fabs(sv ->IlluminantXYZ.X - 154.279) > 1E-3 ||
+        fabs(sv ->IlluminantXYZ.Y - 160.0)   > 1E-3 ||
+        fabs(sv ->IlluminantXYZ.Z - 131.949) > 1E-3 ||
+        fabs(sv ->SurroundXYZ.X   - 154.279) > 1E-3 ||
+        fabs(sv ->SurroundXYZ.Y   - 160.0)   > 1E-3 ||
+        fabs(sv ->SurroundXYZ.Z   - 131.949) > 1E-3) {
+
+        Fail("Fixture svcn illuminant/surround XYZ is %g/%g/%g and %g/%g/%g, "
+             "expected 154.279/160.0/131.949 for both",
+             sv ->IlluminantXYZ.X, sv ->IlluminantXYZ.Y, sv ->IlluminantXYZ.Z,
+             sv ->SurroundXYZ.X, sv ->SurroundXYZ.Y, sv ->SurroundXYZ.Z);
+        goto Done;
+    }
+
+    rc = 1;
+
+Done:
+    cmsSetLogErrorHandler(FatalErrorQuit);
+
+    if (hEmbedded != NULL) cmsCloseProfile(hEmbedded);
+    if (hOuter != NULL) cmsCloseProfile(hOuter);
+    if (ctx != NULL) cmsDeleteContext(ctx);
+
+    return rc;
+}
+
+// --------------------------------------------------------------------------------------------------
 // P E R F O R M A N C E   C H E C K S
 // --------------------------------------------------------------------------------------------------
 
@@ -10533,6 +10867,8 @@ int main(int argc, char* argv[])
     Check("Mixing RAW and Cooked tags", CheckMixedRawAndCooked);
     Check("iccMAX hybrid printer spectra via plug-in", CheckIccMaxHybridPrinter);
     Check("iccMAX spectral white point tag via plug-in", CheckIccMaxSpectralWhitePoint);
+    Check("iccMAX spectral viewing conditions round trip via plug-in", CheckIccMaxSpectralViewingConditions);
+    Check("iccMAX spectral viewing conditions against fixture via plug-in", CheckIccMaxSvcnAgainstFixture);
     }
 
     if (DoPluginTests)

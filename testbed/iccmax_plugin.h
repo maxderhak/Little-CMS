@@ -57,6 +57,13 @@
 #define IccMaxSigFloat32ArrayType        ((cmsTagTypeSignature) 0x666C3332)  // 'fl32'
 #define IccMaxSigSpectralWhitePointTag   ((cmsTagSignature)     0x73777074)  // 'swpt', ICC.2 9.2.112
 
+// spectralViewingConditionsType, ICC.2:2023 10.2.22 (Table 69), and the tag that carries it,
+// ICC.2:2023 9.2.111. ICC.2 reuses the 'svcn' FourCC for both the tag signature and the type
+// signature: the tag directory entry is followed by a nonzero file offset, while the type
+// header at the start of the tag's own data is followed by 4 reserved zero bytes.
+#define IccMaxSigSpectralViewingConditionsType ((cmsTagTypeSignature) 0x7376636E)  // 'svcn'
+#define IccMaxSigSpectralViewingConditionsTag  ((cmsTagSignature)     0x7376636E)  // 'svcn'
+
 // A bare vector of values, sized by nValues rather than by any fixed per-tag constant. See
 // iccmax_plugin.c for why: TagDescriptor->ElemCount cannot express this tag's length.
 typedef struct {
@@ -80,6 +87,38 @@ CMSAPI cmsBool           CMSEXPORT IccMaxReadSpectralWhitePoint(cmsHPROFILE hPro
 CMSAPI cmsBool           CMSEXPORT IccMaxWriteSpectralWhitePoint(cmsHPROFILE hProfile,
                                                                   const IccMaxFloatArray* In,
                                                                   cmsTagTypeSignature AsType);
+
+// Observer and illuminant for a spectrally-based PCS (ICC.2:2023 Table 69, as corrected on
+// 2026-08-07: the two trailing CIEXYZ triples are float32Number[3], not XYZNumber). The
+// observer step count N and the illuminant step count M are independent of each other and of
+// the spectral PCS channel count -- nothing here may assume they agree.
+typedef struct {
+
+    cmsContext        ContextID;
+
+    cmsUInt32Number    ObserverType;      // Table 70: 0 custom, 1 CIE 1931, 2 CIE 1964
+    cmsFloat32Number   ObserverStart;     // nm
+    cmsFloat32Number   ObserverEnd;       // nm
+    cmsUInt16Number    ObserverSteps;     // N
+    cmsFloat32Number*  Observer;          // 3N values: all X, then all Y, then all Z
+
+    cmsUInt32Number    IlluminantType;    // Table 71: 1 D50, 9 black body by CCT, ...
+    cmsFloat32Number   CCT;               // only meaningful for the black-body types
+    cmsFloat32Number   IlluminantStart;   // nm
+    cmsFloat32Number   IlluminantEnd;     // nm
+    cmsUInt16Number    IlluminantSteps;   // M
+    cmsFloat32Number*  Illuminant;        // M values
+
+    cmsCIEXYZ          IlluminantXYZ;     // un-normalised, Y in cd/m2
+    cmsCIEXYZ          SurroundXYZ;       // un-normalised
+
+} IccMaxSpectralViewingConditions;
+
+// Allocates a zeroed svcn payload with N observer steps and M illuminant steps.
+CMSAPI IccMaxSpectralViewingConditions* CMSEXPORT IccMaxAllocSpectralViewingConditions(
+    cmsContext ContextID, cmsUInt16Number ObserverSteps, cmsUInt16Number IlluminantSteps);
+CMSAPI void                             CMSEXPORT IccMaxFreeSpectralViewingConditions(
+    IccMaxSpectralViewingConditions* v);
 
 // Returns the head of a chained plug-in list registering all of the above. Hand it to
 // cmsPlugin or cmsPluginTHR. The list is static, so there is nothing to free.

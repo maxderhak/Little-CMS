@@ -39,6 +39,8 @@
 //   'fl32'  float32ArrayType, a new tag type
 //   'swpt'  spectralWhitePointTag, the tag that carries either of the above (or the core's
 //           own 'ui16'), a new tag
+//   'svcn'  spectralViewingConditionsType, a new tag type, and spectralViewingConditionsTag,
+//           the tag that carries it (ICC.2 reuses the 'svcn' FourCC for both)
 //
 // Nothing here re-implements 'cvst', 'clut', 'matf', 'mpet', 'curf', 'parf', 'samf' or
 // 'sngf'. Those are read by the library, and this plug-in inherits every fix made to them.
@@ -804,13 +806,292 @@ cmsBool IccMaxWriteSpectralWhitePoint(cmsHPROFILE hProfile,
     return rc;
 }
 
+// Free defined before Alloc, so Alloc's partial-failure path can call it.
+void IccMaxFreeSpectralViewingConditions(IccMaxSpectralViewingConditions* v)
+{
+    if (v == NULL) return;
+
+    if (v ->Observer   != NULL) _cmsFree(v ->ContextID, v ->Observer);
+    if (v ->Illuminant != NULL) _cmsFree(v ->ContextID, v ->Illuminant);
+
+    _cmsFree(v ->ContextID, v);
+}
+
+// Observer and illuminant step counts are independent of each other and of the spectral PCS
+// channel count (ICC.2:2023 Table 69) -- nothing here assumes they agree.
+IccMaxSpectralViewingConditions* IccMaxAllocSpectralViewingConditions(cmsContext ContextID,
+                                                                       cmsUInt16Number ObserverSteps,
+                                                                       cmsUInt16Number IlluminantSteps)
+{
+    IccMaxSpectralViewingConditions* v;
+
+    if (ObserverSteps == 0 || IlluminantSteps == 0) return NULL;
+
+    v = (IccMaxSpectralViewingConditions*) _cmsMallocZero(ContextID, sizeof(IccMaxSpectralViewingConditions));
+    if (v == NULL) return NULL;
+
+    // Set ContextID immediately after the struct allocation, before either array allocation,
+    // so the partial-failure path below frees against the allocator the memory came from.
+    v ->ContextID = ContextID;
+
+    // 3N for the observer: the X vector, then Y, then Z
+    v ->Observer = (cmsFloat32Number*) _cmsCalloc(ContextID, 3 * (cmsUInt32Number) ObserverSteps,
+                                                  sizeof(cmsFloat32Number));
+    v ->Illuminant = (cmsFloat32Number*) _cmsCalloc(ContextID, IlluminantSteps,
+                                                    sizeof(cmsFloat32Number));
+
+    if (v ->Observer == NULL || v ->Illuminant == NULL) {
+
+        IccMaxFreeSpectralViewingConditions(v);
+        return NULL;
+    }
+
+    v ->ObserverSteps   = ObserverSteps;
+    v ->IlluminantSteps = IlluminantSteps;
+
+    return v;
+}
+
+
+// ********************************************************************************
+// spectralViewingConditionsType ('svcn') -- ICC.2:2023 Table 69, as corrected 2026-08-07
+// ********************************************************************************
+//
+// The tag layout, with byte 0 being the first byte the framework hands a type handler (it
+// has already consumed the 4-byte 'svcn' type signature and the 4 reserved bytes that follow
+// it):
+//
+//     0..3   observer type                uInt32Number, Table 70
+//     4..5   observer spectral range start float16Number
+//     6..7   observer spectral range end   float16Number
+//     8..9   observer steps (N)            uInt16Number
+//     10..11 reserved
+//     12..12+12N-1  observer matrix        float32Number[3N]: all X, then all Y, then all Z
+//     ..+3   illuminant type               uInt32Number, Table 71
+//     ..+3   correlated colour temperature float32Number
+//     ..+1   illuminant spectral range start float16Number
+//     ..+1   illuminant spectral range end   float16Number
+//     ..+1   illuminant steps (M)          uInt16Number
+//     ..+1   reserved
+//     ..+4M-1 illuminant vector           float32Number[M]
+//     ..+11  illuminant CIEXYZ, un-normalised, Y in cd/m2   float32Number[3], Table 69 as
+//     ..+11  surround CIEXYZ, un-normalised                 float32Number[3], corrected
+//
+// Both trailing triples are read into cmsFloat32Number locals and then assigned into the
+// cmsCIEXYZ (cmsFloat64Number) fields one member at a time: passing &sv->IlluminantXYZ.X
+// straight to a float32 reader would write 4 bytes into an 8-byte field and corrupt it.
+
+static
+void* Type_SpectralViewingConditions_Read(struct _cms_typehandler_struct* self, cmsIOHANDLER* io,
+                                          cmsUInt32Number* nItems, cmsUInt32Number SizeOfTag)
+{
+    IccMaxSpectralViewingConditions* sv = NULL;
+    cmsFloat32Number* Observer = NULL;
+    cmsUInt32Number ObserverType, IlluminantType;
+    cmsFloat32Number ObserverStart, ObserverEnd, IlluminantStart, IlluminantEnd, CCT;
+    cmsUInt16Number N, M, Reserved;
+    cmsUInt32Number i, n3;
+    cmsFloat32Number fx, fy, fz;
+
+    *nItems = 0;
+
+    // Observer: type, spectral range, steps, two reserved bytes. Twelve bytes so far.
+    if (SizeOfTag < 12) return NULL;
+
+    if (!_cmsReadUInt32Number(io, &ObserverType)) return NULL;
+    if (!_cmsReadFloat16Number(io, &ObserverStart)) return NULL;
+    if (!_cmsReadFloat16Number(io, &ObserverEnd)) return NULL;
+    if (!_cmsReadUInt16Number(io, &N)) return NULL;
+    if (!_cmsReadUInt16Number(io, &Reserved)) return NULL;
+
+    // ICC.2 10.2.22 permits N == 0 when the observer type is one of the Table 70 standard
+    // observers: the range then defaults to 380-780 nm in 81 steps of the standard CMF data,
+    // and the matrix is simply absent from the wire. This plug-in does not carry the standard
+    // CIE 1931 / 1964 CMF tables needed to populate Observer in that case, so rather than
+    // half-read the tag (leaving Observer NULL while claiming success) N == 0 is rejected
+    // outright.
+    if (N == 0) return NULL;
+
+    // The observer matrix plus the illuminant's own 16 byte header (type, CCT, range, steps,
+    // reserved) must fit before M can be trusted to have been read from validated bytes. N is
+    // a uInt16, so 12*N cannot overflow 32 bits.
+    n3 = 3 * (cmsUInt32Number) N;
+
+    if (SizeOfTag < 12u + 12u * (cmsUInt32Number) N + 16u) return NULL;
+
+    // M is only known after the observer matrix, but the allocator needs both N and M at
+    // once, so the matrix is read into this temporary and copied into the struct once it
+    // exists below. Freed on every failure path and nulled once ownership transfers, so the
+    // Error label below cannot double-free it.
+    Observer = (cmsFloat32Number*) _cmsCalloc(self ->ContextID, n3, sizeof(cmsFloat32Number));
+    if (Observer == NULL) return NULL;
+
+    for (i = 0; i < n3; i++)
+        if (!_cmsReadFloat32Number(io, &Observer[i])) goto Error;
+
+    // Illuminant: type, CCT, spectral range, steps, two reserved bytes
+    if (!_cmsReadUInt32Number(io, &IlluminantType)) goto Error;
+    if (!_cmsReadFloat32Number(io, &CCT)) goto Error;
+    if (!_cmsReadFloat16Number(io, &IlluminantStart)) goto Error;
+    if (!_cmsReadFloat16Number(io, &IlluminantEnd)) goto Error;
+    if (!_cmsReadUInt16Number(io, &M)) goto Error;
+    if (!_cmsReadUInt16Number(io, &Reserved)) goto Error;
+
+    if (M == 0) goto Error;
+
+    // The illuminant vector plus the two trailing XYZ triples (24 bytes total, float32 per
+    // the corrected Table 69) must fit. M is a uInt16, so 4*M cannot overflow 32 bits either.
+    if (SizeOfTag < 12u + 12u * (cmsUInt32Number) N + 16u + 4u * (cmsUInt32Number) M + 24u)
+        goto Error;
+
+    sv = IccMaxAllocSpectralViewingConditions(self ->ContextID, N, M);
+    if (sv == NULL) goto Error;
+
+    memcpy(sv ->Observer, Observer, n3 * sizeof(cmsFloat32Number));
+    _cmsFree(self ->ContextID, Observer);
+    Observer = NULL;
+
+    sv ->ObserverType    = ObserverType;
+    sv ->ObserverStart   = ObserverStart;
+    sv ->ObserverEnd     = ObserverEnd;
+    sv ->IlluminantType  = IlluminantType;
+    sv ->CCT             = CCT;
+    sv ->IlluminantStart = IlluminantStart;
+    sv ->IlluminantEnd   = IlluminantEnd;
+
+    for (i = 0; i < (cmsUInt32Number) M; i++)
+        if (!_cmsReadFloat32Number(io, &sv ->Illuminant[i])) goto Error;
+
+    // Both trailing triples are float32Number[3] per the corrected Table 69. cmsCIEXYZ's
+    // members are cmsFloat64Number, so read into float32 locals first and assign member by
+    // member -- see the header comment above this handler.
+    if (!_cmsReadFloat32Number(io, &fx)) goto Error;
+    if (!_cmsReadFloat32Number(io, &fy)) goto Error;
+    if (!_cmsReadFloat32Number(io, &fz)) goto Error;
+    sv ->IlluminantXYZ.X = fx;
+    sv ->IlluminantXYZ.Y = fy;
+    sv ->IlluminantXYZ.Z = fz;
+
+    if (!_cmsReadFloat32Number(io, &fx)) goto Error;
+    if (!_cmsReadFloat32Number(io, &fy)) goto Error;
+    if (!_cmsReadFloat32Number(io, &fz)) goto Error;
+    sv ->SurroundXYZ.X = fx;
+    sv ->SurroundXYZ.Y = fy;
+    sv ->SurroundXYZ.Z = fz;
+
+    *nItems = 1;
+    return (void*) sv;
+
+Error:
+    if (Observer != NULL) _cmsFree(self ->ContextID, Observer);
+    if (sv != NULL) IccMaxFreeSpectralViewingConditions(sv);
+    return NULL;
+}
+
+static
+cmsBool Type_SpectralViewingConditions_Write(struct _cms_typehandler_struct* self, cmsIOHANDLER* io,
+                                             void* Ptr, cmsUInt32Number nItems)
+{
+    IccMaxSpectralViewingConditions* sv = (IccMaxSpectralViewingConditions*) Ptr;
+    cmsUInt32Number i, n3, m;
+    cmsFloat32Number fx, fy, fz;
+
+    if (sv == NULL || sv ->Observer == NULL || sv ->Illuminant == NULL) return FALSE;
+    if (sv ->ObserverSteps == 0 || sv ->IlluminantSteps == 0) return FALSE;
+
+    n3 = 3 * (cmsUInt32Number) sv ->ObserverSteps;
+    m  = (cmsUInt32Number) sv ->IlluminantSteps;
+
+    if (!_cmsWriteUInt32Number(io, sv ->ObserverType)) return FALSE;
+    if (!WriteFloat16Number(io, sv ->ObserverStart)) return FALSE;
+    if (!WriteFloat16Number(io, sv ->ObserverEnd)) return FALSE;
+    if (!_cmsWriteUInt16Number(io, sv ->ObserverSteps)) return FALSE;
+    if (!_cmsWriteUInt16Number(io, 0)) return FALSE;                    // reserved
+
+    for (i = 0; i < n3; i++)
+        if (!_cmsWriteFloat32Number(io, sv ->Observer[i])) return FALSE;
+
+    if (!_cmsWriteUInt32Number(io, sv ->IlluminantType)) return FALSE;
+    if (!_cmsWriteFloat32Number(io, sv ->CCT)) return FALSE;
+    if (!WriteFloat16Number(io, sv ->IlluminantStart)) return FALSE;
+    if (!WriteFloat16Number(io, sv ->IlluminantEnd)) return FALSE;
+    if (!_cmsWriteUInt16Number(io, sv ->IlluminantSteps)) return FALSE;
+    if (!_cmsWriteUInt16Number(io, 0)) return FALSE;                    // reserved
+
+    for (i = 0; i < m; i++)
+        if (!_cmsWriteFloat32Number(io, sv ->Illuminant[i])) return FALSE;
+
+    // Both trailing triples are float32Number[3] per the corrected Table 69 -- see the header
+    // comment above Type_SpectralViewingConditions_Read.
+    fx = (cmsFloat32Number) sv ->IlluminantXYZ.X;
+    fy = (cmsFloat32Number) sv ->IlluminantXYZ.Y;
+    fz = (cmsFloat32Number) sv ->IlluminantXYZ.Z;
+    if (!_cmsWriteFloat32Number(io, fx)) return FALSE;
+    if (!_cmsWriteFloat32Number(io, fy)) return FALSE;
+    if (!_cmsWriteFloat32Number(io, fz)) return FALSE;
+
+    fx = (cmsFloat32Number) sv ->SurroundXYZ.X;
+    fy = (cmsFloat32Number) sv ->SurroundXYZ.Y;
+    fz = (cmsFloat32Number) sv ->SurroundXYZ.Z;
+    if (!_cmsWriteFloat32Number(io, fx)) return FALSE;
+    if (!_cmsWriteFloat32Number(io, fy)) return FALSE;
+    if (!_cmsWriteFloat32Number(io, fz)) return FALSE;
+
+    return TRUE;
+
+    cmsUNUSED_PARAMETER(self);
+    cmsUNUSED_PARAMETER(nItems);
+}
+
+static
+void* Type_SpectralViewingConditions_Dup(struct _cms_typehandler_struct* self, const void* Ptr, cmsUInt32Number n)
+{
+    const IccMaxSpectralViewingConditions* sv = (const IccMaxSpectralViewingConditions*) Ptr;
+    IccMaxSpectralViewingConditions* New;
+
+    if (sv == NULL) return NULL;
+
+    // Lengths come from the object's own ObserverSteps/IlluminantSteps, never from n, which
+    // is TagDescriptor->ElemCount, a fixed constant (1 for this tag) -- using n here once
+    // truncated the ICC5 tag's Dup to one byte earlier in this project.
+    New = IccMaxAllocSpectralViewingConditions(self ->ContextID, sv ->ObserverSteps, sv ->IlluminantSteps);
+    if (New == NULL) return NULL;
+
+    memcpy(New ->Observer, sv ->Observer,
+           3 * (cmsUInt32Number) sv ->ObserverSteps * sizeof(cmsFloat32Number));
+    memcpy(New ->Illuminant, sv ->Illuminant,
+           (cmsUInt32Number) sv ->IlluminantSteps * sizeof(cmsFloat32Number));
+
+    New ->ObserverType    = sv ->ObserverType;
+    New ->ObserverStart   = sv ->ObserverStart;
+    New ->ObserverEnd     = sv ->ObserverEnd;
+    New ->IlluminantType  = sv ->IlluminantType;
+    New ->CCT             = sv ->CCT;
+    New ->IlluminantStart = sv ->IlluminantStart;
+    New ->IlluminantEnd   = sv ->IlluminantEnd;
+    New ->IlluminantXYZ   = sv ->IlluminantXYZ;
+    New ->SurroundXYZ     = sv ->SurroundXYZ;
+
+    return (void*) New;
+
+    cmsUNUSED_PARAMETER(n);
+}
+
+static
+void Type_SpectralViewingConditions_Free(struct _cms_typehandler_struct* self, void* Ptr)
+{
+    IccMaxFreeSpectralViewingConditions((IccMaxSpectralViewingConditions*) Ptr);
+
+    cmsUNUSED_PARAMETER(self);
+}
+
 
 // ********************************************************************************
 // The plug-in list
 // ********************************************************************************
 //
 // Chained back to front so that cmsGetIccMaxPlugin can return a single head. Every entry
-// is an addition: none of these seven signatures is handled by the library.
+// is an addition: none of these nine signatures is handled by the library.
 
 static cmsPluginParametricCurves IccMaxCurvesPlugin = {
 
@@ -879,7 +1160,26 @@ static cmsPluginTag IccMaxSpectralWhitePointTagPlugin = {
     { 1, 2, { IccMaxSigFloat32ArrayType, IccMaxSigFloat16ArrayType }, NULL }
 };
 
+static cmsPluginTagType IccMaxSpectralViewingConditionsTypePlugin = {
+
+    { cmsPluginMagicNumber, 2060, cmsPluginTagTypeSig,
+      (cmsPluginBase*) &IccMaxSpectralWhitePointTagPlugin },
+
+    { IccMaxSigSpectralViewingConditionsType,
+      Type_SpectralViewingConditions_Read, Type_SpectralViewingConditions_Write,
+      Type_SpectralViewingConditions_Dup,  Type_SpectralViewingConditions_Free, NULL, 0 }
+};
+
+static cmsPluginTag IccMaxSpectralViewingConditionsTagPlugin = {
+
+    { cmsPluginMagicNumber, 2060, cmsPluginTagSig,
+      (cmsPluginBase*) &IccMaxSpectralViewingConditionsTypePlugin },
+
+    IccMaxSigSpectralViewingConditionsTag,
+    { 1, 1, { IccMaxSigSpectralViewingConditionsType }, NULL }
+};
+
 cmsPluginBase* CMSEXPORT cmsGetIccMaxPlugin(void)
 {
-    return (cmsPluginBase*) &IccMaxSpectralWhitePointTagPlugin;
+    return (cmsPluginBase*) &IccMaxSpectralViewingConditionsTagPlugin;
 }
