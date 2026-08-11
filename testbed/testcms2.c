@@ -9011,7 +9011,7 @@ cmsInt32Number CheckCLUTOverflowRejected(void)
 // The five CMYK probes, and the 36 channel spectra the reference implementation produced for
 // them. Anything structurally wrong shows up immediately: probe 0 is paper white and runs high,
 // probe 4 is full ink and is near zero throughout.
-static const cmsFloat32Number IccMaxProbes[5][4] = {
+static const cmsFloat32Number IccMaxRefProbes[5][4] = {
     { 0.00f, 0.00f, 0.00f, 0.00f },
     { 1.00f, 0.00f, 0.00f, 0.00f },
     { 0.00f, 1.00f, 0.00f, 0.00f },
@@ -9022,7 +9022,7 @@ static const cmsFloat32Number IccMaxProbes[5][4] = {
 // Captured from the macro-guarded implementation on branch iccmax-hybrid-printer-spectral reading
 // this same fixture, so matching them proves the plug-in is behaviourally equivalent to it rather
 // than merely self-consistent. Pipeline is 4 in, 36 out, 3 stages.
-static const cmsFloat32Number IccMaxRefSpectra[5][36] = {
+static const cmsFloat32Number IccMaxRefFixtureSpectra[5][36] = {
     {   // probe0
         0.2929276f, 0.3709240f, 0.4679439f, 0.6663543f, 0.9077541f, 0.9907959f,
         1.0116463f, 0.9974605f, 0.9767422f, 0.9531693f, 0.9247534f, 0.9128669f,
@@ -9065,13 +9065,13 @@ static const cmsFloat32Number IccMaxRefSpectra[5][36] = {
     }
 };
 
-#define IccMaxSpectralTolerance  1e-6
+#define IccMaxRefSpectralTolerance  1e-6
 
 // Change B must leave the ICC.1 path bit-identical: the parameter counts the deleted static
 // table held for ICC formula types 0, 1 and 2 have to come back unchanged from the collection
 // lookup, whether or not a plug-in is registered.
 static
-int CheckIccMaxFormulaParamCounts(cmsContext ctx, const char* Where)
+int CheckIccMaxRefFormulaParamCounts(cmsContext ctx, const char* Where)
 {
     static const cmsUInt32Number Expected[3] = { 4, 5, 5 };   // ICC types 0, 1, 2 = lcms 6, 7, 8
     cmsUInt32Number n;
@@ -9125,7 +9125,7 @@ int CheckIccMaxFormulaParamCounts(cmsContext ctx, const char* Where)
 }
 
 static
-int CheckIccMaxHybridPrinter(void)
+int CheckIccMaxRefHybridPrinter(void)
 {
     cmsContext ctx = NULL;
     cmsHPROFILE hOuter = NULL;
@@ -9138,7 +9138,7 @@ int CheckIccMaxHybridPrinter(void)
     int rc = 0;
 
     // First check the built-in path is untouched with no plug-in anywhere
-    if (!CheckIccMaxFormulaParamCounts(DbgThread(), "no plug-in")) return 0;
+    if (!CheckIccMaxRefFormulaParamCounts(DbgThread(), "no plug-in")) return 0;
 
     // A context of its own, so the iccMAX handlers are an opt-in of this test alone and every
     // other check in this suite still runs against an unextended library. WatchDogContext
@@ -9155,7 +9155,7 @@ int CheckIccMaxHybridPrinter(void)
         return 0;
     }
 
-    if (!cmsPluginTHR(ctx, IccMaxGetPlugin())) {
+    if (!cmsPluginTHR(ctx, IccMaxRefGetPlugin())) {
         Fail("Could not register the iccMAX plug-in");
         goto Done;
     }
@@ -9167,7 +9167,7 @@ int CheckIccMaxHybridPrinter(void)
 
     // The plug-in's five formula types are now visible, and the three ICC.1 ones must be
     // exactly as they were
-    if (!CheckIccMaxFormulaParamCounts(ctx, "with plug-in")) goto Done;
+    if (!CheckIccMaxRefFormulaParamCounts(ctx, "with plug-in")) goto Done;
 
     if (!_cmsGetFormulaCurveSegmentParams(ctx, 9, &nParams) || nParams != 5) {
         Fail("The plug-in's formula type 3 (lcms 9) did not resolve to 5 parameters");
@@ -9181,7 +9181,7 @@ int CheckIccMaxHybridPrinter(void)
     }
 
     // The embedded ICC.2 profile, through the plug-in's 'ICC5' tag and 'ICCp' tag type
-    Embedded = (const cmsICCData*) cmsReadTag(hOuter, IccMaxSigEmbeddedV5Tag);
+    Embedded = (const cmsICCData*) cmsReadTag(hOuter, IccMaxRefSigEmbeddedV5Tag);
     if (Embedded == NULL) {
         Fail("Could not read the ICC5 tag");
         goto Done;
@@ -9220,12 +9220,12 @@ int CheckIccMaxHybridPrinter(void)
     for (probe = 0; probe < 5; probe++) {
 
         memset(Out, 0, sizeof(Out));
-        cmsPipelineEvalFloat(IccMaxProbes[probe], Out, Lut);
+        cmsPipelineEvalFloat(IccMaxRefProbes[probe], Out, Lut);
 
         for (ch = 0; ch < 36; ch++) {
 
             cmsFloat64Number got = Out[ch];
-            cmsFloat64Number want = IccMaxRefSpectra[probe][ch];
+            cmsFloat64Number want = IccMaxRefFixtureSpectra[probe][ch];
 
             // NaN has to be tested for on its own: fabs(NaN - want) > tol is FALSE, so a NaN
             // would slip through the tolerance check below without a sound.
@@ -9235,7 +9235,7 @@ int CheckIccMaxHybridPrinter(void)
                 goto Done;
             }
 
-            if (fabs(got - want) > IccMaxSpectralTolerance) {
+            if (fabs(got - want) > IccMaxRefSpectralTolerance) {
 
                 Fail("probe %d channel %d: got %.7f, expected %.7f (delta %g)",
                      probe, ch, got, want, fabs(got - want));
@@ -9261,20 +9261,20 @@ Done:
 // via the plug-in in iccmax_plugin.c
 // --------------------------------------------------------------------------------------------------
 
-#define IccMaxSwptNValues  36
+#define IccMaxRefSwptNValues  36
 
 static
-int CheckIccMaxSpectralWhitePoint(void)
+int CheckIccMaxRefSpectralWhitePoint(void)
 {
     cmsContext ctx = NULL;
     cmsHPROFILE hOuter = NULL;
     cmsHPROFILE hEmbedded = NULL;
     cmsHPROFILE h = NULL;
     const cmsICCData* Embedded;
-    const IccMaxFloatArray* Fixture;
-    IccMaxFloatArray* Src = NULL;
-    IccMaxFloatArray* Rt = NULL;
-    IccMaxFloatArray* Out = NULL;
+    const IccMaxRefFloatArray* Fixture;
+    IccMaxRefFloatArray* Src = NULL;
+    IccMaxRefFloatArray* Rt = NULL;
+    IccMaxRefFloatArray* Out = NULL;
     cmsUInt8Number TypeBytes[4];
     cmsUInt32Number OnDiskType;
     cmsUInt32Number i, enc;
@@ -9284,7 +9284,7 @@ int CheckIccMaxSpectralWhitePoint(void)
     // (lossless) entry" convention, then fl16, then the core's own uInt16ArrayType -- the
     // three encodings ICC.2 9.2.112 permits for this tag.
     static const cmsTagTypeSignature Encodings[3] = {
-        IccMaxSigFloat32ArrayType, IccMaxSigFloat16ArrayType, cmsSigUInt16ArrayType
+        IccMaxRefSigFloat32ArrayType, IccMaxRefSigFloat16ArrayType, cmsSigUInt16ArrayType
     };
     // fl32 is bit-exact; fl16 loses precision to half-float rounding; ui16's quantum is
     // 1/65535 = 1.53e-5, so 2e-5 is just above it and would fail if the ui16 mapping broke.
@@ -9296,7 +9296,7 @@ int CheckIccMaxSpectralWhitePoint(void)
         return 0;
     }
 
-    if (!cmsPluginTHR(ctx, IccMaxGetPlugin())) {
+    if (!cmsPluginTHR(ctx, IccMaxRefGetPlugin())) {
         Fail("Could not register the iccMAX plug-in");
         goto Done;
     }
@@ -9313,7 +9313,7 @@ int CheckIccMaxSpectralWhitePoint(void)
         goto Done;
     }
 
-    Embedded = (const cmsICCData*) cmsReadTag(hOuter, IccMaxSigEmbeddedV5Tag);
+    Embedded = (const cmsICCData*) cmsReadTag(hOuter, IccMaxRefSigEmbeddedV5Tag);
     if (Embedded == NULL) {
         Fail("Could not read the ICC5 tag");
         goto Done;
@@ -9325,15 +9325,15 @@ int CheckIccMaxSpectralWhitePoint(void)
         goto Done;
     }
 
-    Fixture = (const IccMaxFloatArray*) cmsReadTag(hEmbedded, IccMaxSigSpectralWhitePointTag);
+    Fixture = (const IccMaxRefFloatArray*) cmsReadTag(hEmbedded, IccMaxRefSigSpectralWhitePointTag);
     if (Fixture == NULL) {
         Fail("Could not read swpt from the fixture");
         goto Done;
     }
 
-    if (Fixture ->nValues != IccMaxSwptNValues) {
+    if (Fixture ->nValues != IccMaxRefSwptNValues) {
         Fail("Fixture swpt has %u values, expected %u", Fixture ->nValues,
-             (cmsUInt32Number) IccMaxSwptNValues);
+             (cmsUInt32Number) IccMaxRefSwptNValues);
         goto Done;
     }
 
@@ -9351,14 +9351,14 @@ int CheckIccMaxSpectralWhitePoint(void)
     // make item 3 below exercise ui16's clamp instead of its round trip, which is item 4's
     // job, not this one's).
 
-    Src = IccMaxAllocFloatArray(ctx, IccMaxSwptNValues);
+    Src = IccMaxRefAllocFloatArray(ctx, IccMaxRefSwptNValues);
     if (Src == NULL) {
         Fail("Could not allocate the source float array");
         goto Done;
     }
 
-    for (i = 0; i < IccMaxSwptNValues; i++)
-        Src ->Values[i] = (cmsFloat32Number) i / (cmsFloat32Number) (IccMaxSwptNValues - 1);
+    for (i = 0; i < IccMaxRefSwptNValues; i++)
+        Src ->Values[i] = (cmsFloat32Number) i / (cmsFloat32Number) (IccMaxRefSwptNValues - 1);
 
     h = cmsOpenProfileFromFileTHR(ctx, "swpt_roundtrip.icc", "w");
     if (h == NULL) {
@@ -9368,7 +9368,7 @@ int CheckIccMaxSpectralWhitePoint(void)
 
     cmsSetProfileVersion(h, 5.0);
 
-    if (!cmsWriteTag(h, IccMaxSigSpectralWhitePointTag, (void*) Src)) {
+    if (!cmsWriteTag(h, IccMaxRefSigSpectralWhitePointTag, (void*) Src)) {
         Fail("cmsWriteTag failed writing swpt");
         goto Done;
     }
@@ -9380,19 +9380,19 @@ int CheckIccMaxSpectralWhitePoint(void)
         goto Done;
     }
 
-    Rt = (IccMaxFloatArray*) cmsReadTag(h, IccMaxSigSpectralWhitePointTag);
+    Rt = (IccMaxRefFloatArray*) cmsReadTag(h, IccMaxRefSigSpectralWhitePointTag);
     if (Rt == NULL) {
         Fail("Could not reread swpt after the round trip");
         goto Done;
     }
 
-    if (Rt ->nValues != IccMaxSwptNValues) {
+    if (Rt ->nValues != IccMaxRefSwptNValues) {
         Fail("Round trip swpt has %u values, expected %u", Rt ->nValues,
-             (cmsUInt32Number) IccMaxSwptNValues);
+             (cmsUInt32Number) IccMaxRefSwptNValues);
         goto Done;
     }
 
-    for (i = 0; i < IccMaxSwptNValues; i++) {
+    for (i = 0; i < IccMaxRefSwptNValues; i++) {
 
         if (isnan(Rt ->Values[i])) {
             Fail("Round trip swpt value %u came back NaN", i);
@@ -9420,12 +9420,12 @@ int CheckIccMaxSpectralWhitePoint(void)
             goto Done;
         }
 
-        if (!IccMaxWriteSpectralWhitePoint(h, Src, Encodings[enc])) {
-            Fail("IccMaxWriteSpectralWhitePoint failed for encoding %u", enc);
+        if (!IccMaxRefWriteSpectralWhitePoint(h, Src, Encodings[enc])) {
+            Fail("IccMaxRefWriteSpectralWhitePoint failed for encoding %u", enc);
             goto Done;
         }
 
-        if (cmsReadRawTag(h, IccMaxSigSpectralWhitePointTag, TypeBytes, 4) != 4) {
+        if (cmsReadRawTag(h, IccMaxRefSigSpectralWhitePointTag, TypeBytes, 4) != 4) {
             Fail("Could not read back the on-disk type signature for encoding %u", enc);
             goto Done;
         }
@@ -9437,23 +9437,23 @@ int CheckIccMaxSpectralWhitePoint(void)
             goto Done;
         }
 
-        if (!IccMaxReadSpectralWhitePoint(h, &Out)) {
-            Fail("IccMaxReadSpectralWhitePoint failed for encoding %u", enc);
+        if (!IccMaxRefReadSpectralWhitePoint(h, &Out)) {
+            Fail("IccMaxRefReadSpectralWhitePoint failed for encoding %u", enc);
             goto Done;
         }
 
-        if (Out ->nValues != IccMaxSwptNValues) {
+        if (Out ->nValues != IccMaxRefSwptNValues) {
             Fail("Accessor round trip swpt has %u values, expected %u for encoding %u",
-                 Out ->nValues, (cmsUInt32Number) IccMaxSwptNValues, enc);
-            IccMaxFreeFloatArray(Out); Out = NULL;
+                 Out ->nValues, (cmsUInt32Number) IccMaxRefSwptNValues, enc);
+            IccMaxRefFreeFloatArray(Out); Out = NULL;
             goto Done;
         }
 
-        for (i = 0; i < IccMaxSwptNValues; i++) {
+        for (i = 0; i < IccMaxRefSwptNValues; i++) {
 
             if (isnan(Out ->Values[i])) {
                 Fail("Accessor round trip value %u came back NaN for encoding %u", i, enc);
-                IccMaxFreeFloatArray(Out); Out = NULL;
+                IccMaxRefFreeFloatArray(Out); Out = NULL;
                 goto Done;
             }
 
@@ -9461,12 +9461,12 @@ int CheckIccMaxSpectralWhitePoint(void)
                 Fail("swpt encoding %u value %u changed: got %.9g, expected %.9g (delta %g)",
                      enc, i, Out ->Values[i], Src ->Values[i],
                      fabs(Out ->Values[i] - Src ->Values[i]));
-                IccMaxFreeFloatArray(Out); Out = NULL;
+                IccMaxRefFreeFloatArray(Out); Out = NULL;
                 goto Done;
             }
         }
 
-        IccMaxFreeFloatArray(Out);
+        IccMaxRefFreeFloatArray(Out);
         Out = NULL;
 
         cmsCloseProfile(h);
@@ -9475,8 +9475,8 @@ int CheckIccMaxSpectralWhitePoint(void)
 
     // --- 4. Degenerate ui16 write cases ---
     {
-        IccMaxFloatArray* Deg = NULL;
-        IccMaxFloatArray* DegOut = NULL;
+        IccMaxRefFloatArray* Deg = NULL;
+        IccMaxRefFloatArray* DegOut = NULL;
         cmsFloat32Number NaNVal, NegInf, PosInf;
         cmsUInt32Number j;
         // sqrt(-1.0) and log(0.0) rather than literal division, so the special values are
@@ -9487,7 +9487,7 @@ int CheckIccMaxSpectralWhitePoint(void)
         NegInf = (cmsFloat32Number) log(0.0);
         PosInf = (cmsFloat32Number) (-log(0.0));
 
-        Deg = IccMaxAllocFloatArray(ctx, 5);
+        Deg = IccMaxRefAllocFloatArray(ctx, 5);
         if (Deg == NULL) {
             Fail("Could not allocate the degenerate float array");
             goto Done;
@@ -9502,20 +9502,20 @@ int CheckIccMaxSpectralWhitePoint(void)
         h = cmsCreateProfilePlaceholder(ctx);
         if (h == NULL) {
             Fail("Could not create a placeholder profile for the degenerate case");
-            IccMaxFreeFloatArray(Deg);
+            IccMaxRefFreeFloatArray(Deg);
             goto Done;
         }
 
-        if (!IccMaxWriteSpectralWhitePoint(h, Deg, cmsSigUInt16ArrayType)) {
-            Fail("IccMaxWriteSpectralWhitePoint failed for the degenerate ui16 case");
-            IccMaxFreeFloatArray(Deg);
+        if (!IccMaxRefWriteSpectralWhitePoint(h, Deg, cmsSigUInt16ArrayType)) {
+            Fail("IccMaxRefWriteSpectralWhitePoint failed for the degenerate ui16 case");
+            IccMaxRefFreeFloatArray(Deg);
             goto Done;
         }
 
-        IccMaxFreeFloatArray(Deg);
+        IccMaxRefFreeFloatArray(Deg);
 
-        if (!IccMaxReadSpectralWhitePoint(h, &DegOut)) {
-            Fail("IccMaxReadSpectralWhitePoint failed reading back the degenerate ui16 case");
+        if (!IccMaxRefReadSpectralWhitePoint(h, &DegOut)) {
+            Fail("IccMaxRefReadSpectralWhitePoint failed reading back the degenerate ui16 case");
             goto Done;
         }
 
@@ -9524,19 +9524,19 @@ int CheckIccMaxSpectralWhitePoint(void)
             if (isnan(DegOut ->Values[j])) {
                 Fail("Degenerate ui16 value %u came back NaN, expected %.1f",
                      j, Expected[j]);
-                IccMaxFreeFloatArray(DegOut);
+                IccMaxRefFreeFloatArray(DegOut);
                 goto Done;
             }
 
             if (DegOut ->Values[j] != Expected[j]) {
                 Fail("Degenerate ui16 value %u = %.7f, expected %.1f",
                      j, DegOut ->Values[j], Expected[j]);
-                IccMaxFreeFloatArray(DegOut);
+                IccMaxRefFreeFloatArray(DegOut);
                 goto Done;
             }
         }
 
-        IccMaxFreeFloatArray(DegOut);
+        IccMaxRefFreeFloatArray(DegOut);
     }
 
     // --- 5. Rejection: cmsSigUInt8ArrayType has a core handler, so the refusal has to come
@@ -9548,11 +9548,11 @@ int CheckIccMaxSpectralWhitePoint(void)
         cmsBool Accepted;
 
         cmsSetLogErrorHandler(ErrorReportingFunction);
-        Accepted = IccMaxWriteSpectralWhitePoint(h, Src, cmsSigUInt8ArrayType);
+        Accepted = IccMaxRefWriteSpectralWhitePoint(h, Src, cmsSigUInt8ArrayType);
         cmsSetLogErrorHandler(FatalErrorQuit);
 
         if (Accepted) {
-            Fail("IccMaxWriteSpectralWhitePoint accepted cmsSigUInt8ArrayType, which has a "
+            Fail("IccMaxRefWriteSpectralWhitePoint accepted cmsSigUInt8ArrayType, which has a "
                  "core handler but must still be refused by the accessor's own check");
             goto Done;
         }
@@ -9563,19 +9563,19 @@ int CheckIccMaxSpectralWhitePoint(void)
     // not forbid a one-entry swpt, and read and write must agree about it either way.
     {
         static const cmsTagTypeSignature Narrow[2] = {
-            IccMaxSigFloat16ArrayType, cmsSigUInt16ArrayType };
+            IccMaxRefSigFloat16ArrayType, cmsSigUInt16ArrayType };
         cmsUInt32Number e;
 
         for (e = 0; e < 2; e++) {
 
-            IccMaxFloatArray* One = IccMaxAllocFloatArray(DbgThread(), 1);
-            IccMaxFloatArray* Back = NULL;
+            IccMaxRefFloatArray* One = IccMaxRefAllocFloatArray(DbgThread(), 1);
+            IccMaxRefFloatArray* Back = NULL;
             cmsHPROFILE h1 = cmsCreateProfilePlaceholder(DbgThread());
             cmsUInt8Number* M1 = NULL;
             cmsUInt32Number S1 = 0;
 
             if (One == NULL || h1 == NULL) {
-                if (One != NULL) IccMaxFreeFloatArray(One);
+                if (One != NULL) IccMaxRefFreeFloatArray(One);
                 if (h1 != NULL) cmsCloseProfile(h1);
                 goto Done;
             }
@@ -9583,14 +9583,14 @@ int CheckIccMaxSpectralWhitePoint(void)
             One ->Values[0] = 0.5f;
             cmsSetProfileVersion(h1, 5.0);
 
-            if (!IccMaxWriteSpectralWhitePoint(h1, One, Narrow[e]) ||
+            if (!IccMaxRefWriteSpectralWhitePoint(h1, One, Narrow[e]) ||
                 !cmsSaveProfileToMem(h1, NULL, &S1) || S1 == 0 ||
                 (M1 = (cmsUInt8Number*) malloc(S1)) == NULL ||
                 !cmsSaveProfileToMem(h1, M1, &S1)) {
 
                 Fail("Could not author a single value swpt in encoding %d", e);
                 if (M1 != NULL) free(M1);
-                IccMaxFreeFloatArray(One);
+                IccMaxRefFreeFloatArray(One);
                 cmsCloseProfile(h1);
                 goto Done;
             }
@@ -9598,12 +9598,12 @@ int CheckIccMaxSpectralWhitePoint(void)
             cmsCloseProfile(h1);
             h1 = cmsOpenProfileFromMemTHR(DbgThread(), M1, S1);
 
-            if (h1 == NULL || !IccMaxReadSpectralWhitePoint(h1, &Back) || Back == NULL) {
+            if (h1 == NULL || !IccMaxRefReadSpectralWhitePoint(h1, &Back) || Back == NULL) {
 
                 Fail("A single value swpt written in encoding %d could not be read back", e);
-                if (Back != NULL) IccMaxFreeFloatArray(Back);
+                if (Back != NULL) IccMaxRefFreeFloatArray(Back);
                 free(M1);
-                IccMaxFreeFloatArray(One);
+                IccMaxRefFreeFloatArray(One);
                 if (h1 != NULL) cmsCloseProfile(h1);
                 goto Done;
             }
@@ -9612,16 +9612,16 @@ int CheckIccMaxSpectralWhitePoint(void)
 
                 Fail("Single value swpt in encoding %d came back as %d values, first %f",
                      e, Back ->nValues, Back ->Values[0]);
-                IccMaxFreeFloatArray(Back);
+                IccMaxRefFreeFloatArray(Back);
                 free(M1);
-                IccMaxFreeFloatArray(One);
+                IccMaxRefFreeFloatArray(One);
                 cmsCloseProfile(h1);
                 goto Done;
             }
 
-            IccMaxFreeFloatArray(Back);
+            IccMaxRefFreeFloatArray(Back);
             free(M1);
-            IccMaxFreeFloatArray(One);
+            IccMaxRefFreeFloatArray(One);
             cmsCloseProfile(h1);
         }
     }
@@ -9631,7 +9631,7 @@ int CheckIccMaxSpectralWhitePoint(void)
 Done:
     cmsSetLogErrorHandler(FatalErrorQuit);
 
-    if (Src != NULL) IccMaxFreeFloatArray(Src);
+    if (Src != NULL) IccMaxRefFreeFloatArray(Src);
     if (h != NULL) cmsCloseProfile(h);
     if (hEmbedded != NULL) cmsCloseProfile(hEmbedded);
     if (hOuter != NULL) cmsCloseProfile(hOuter);
@@ -9650,16 +9650,16 @@ Done:
 // wire ordering is X-then-Y-then-Z -- any permutation applied consistently by both writer
 // and reader round-trips cleanly regardless. What it actually catches is a writer/reader
 // *disagreement* about where each vector lives (e.g. one side transposing, the other not).
-// The ordering itself is pinned separately, by CheckIccMaxSvcnAgainstFixture's
+// The ordering itself is pinned separately, by CheckIccMaxRefSvcnAgainstFixture's
 // Observer[0]/[81]/[162] checks against reference bytes. Both XYZ triples are distinct from
 // each other too, so an illuminant/surround swap would also be caught here.
 static
-int CheckIccMaxSpectralViewingConditions(void)
+int CheckIccMaxRefSpectralViewingConditions(void)
 {
     cmsContext ctx = NULL;
     cmsHPROFILE h = NULL;
-    IccMaxSpectralViewingConditions* w = NULL;
-    IccMaxSpectralViewingConditions* r;
+    IccMaxRefSpectralViewingConditions* w = NULL;
+    IccMaxRefSpectralViewingConditions* r;
     cmsUInt8Number* Mem = NULL;
     cmsUInt32Number Size = 0;
     cmsUInt32Number TagSize, Expected;
@@ -9677,7 +9677,7 @@ int CheckIccMaxSpectralViewingConditions(void)
     static const cmsUInt8Number svcnSig[8] = { 0x73, 0x76, 0x63, 0x6E, 0x00, 0x00, 0x00, 0x00 };
     cmsUInt8Number* corrupted = NULL;
     cmsHPROFILE hBad = NULL;
-    IccMaxSpectralViewingConditions* rBad = NULL;
+    IccMaxRefSpectralViewingConditions* rBad = NULL;
     cmsUInt32Number sigOffset, k;
 
     ctx = WatchDogContext(NULL);
@@ -9686,7 +9686,7 @@ int CheckIccMaxSpectralViewingConditions(void)
         return 0;
     }
 
-    if (!cmsPluginTHR(ctx, IccMaxGetPlugin())) {
+    if (!cmsPluginTHR(ctx, IccMaxRefGetPlugin())) {
         Fail("Could not register the iccMAX plug-in");
         goto Done;
     }
@@ -9696,9 +9696,9 @@ int CheckIccMaxSpectralViewingConditions(void)
     // unreachable. Restored on every exit path.
     cmsSetLogErrorHandler(ErrorReportingFunction);
 
-    w = IccMaxAllocSpectralViewingConditions(ctx, N, M);
+    w = IccMaxRefAllocSpectralViewingConditions(ctx, N, M);
     if (w == NULL) {
-        Fail("Could not allocate an IccMaxSpectralViewingConditions of N=%u M=%u", N, M);
+        Fail("Could not allocate an IccMaxRefSpectralViewingConditions of N=%u M=%u", N, M);
         goto Done;
     }
 
@@ -9728,7 +9728,7 @@ int CheckIccMaxSpectralViewingConditions(void)
 
     cmsSetProfileVersion(h, 5.0);
 
-    if (!cmsWriteTag(h, IccMaxSigSpectralViewingConditionsTag, w)) {
+    if (!cmsWriteTag(h, IccMaxRefSigSpectralViewingConditionsTag, w)) {
         Fail("Could not write svcn");
         goto Done;
     }
@@ -9761,13 +9761,13 @@ int CheckIccMaxSpectralViewingConditions(void)
 
     // ICC.2 Table 69 (as corrected): the whole tag is 60 + 12N + 4M bytes
     Expected = 60u + 12u * N + 4u * M;
-    TagSize = cmsReadRawTag(h, IccMaxSigSpectralViewingConditionsTag, NULL, 0);
+    TagSize = cmsReadRawTag(h, IccMaxRefSigSpectralViewingConditionsTag, NULL, 0);
     if (TagSize != Expected) {
         Fail("svcn tag is %u bytes, expected %u", TagSize, Expected);
         goto Done;
     }
 
-    r = (IccMaxSpectralViewingConditions*) cmsReadTag(h, IccMaxSigSpectralViewingConditionsTag);
+    r = (IccMaxRefSpectralViewingConditions*) cmsReadTag(h, IccMaxRefSigSpectralViewingConditionsTag);
     if (r == NULL) {
         Fail("Could not read svcn back");
         goto Done;
@@ -9883,7 +9883,7 @@ int CheckIccMaxSpectralViewingConditions(void)
 
     hBad = cmsOpenProfileFromMemTHR(ctx, corrupted, Size);
     if (hBad != NULL) {
-        rBad = (IccMaxSpectralViewingConditions*) cmsReadTag(hBad, IccMaxSigSpectralViewingConditionsTag);
+        rBad = (IccMaxRefSpectralViewingConditions*) cmsReadTag(hBad, IccMaxRefSigSpectralViewingConditionsTag);
     }
 
     cmsSetLogErrorHandler(FatalErrorQuit);
@@ -9903,7 +9903,7 @@ Done:
     if (corrupted != NULL) free(corrupted);
     if (hBad != NULL) cmsCloseProfile(hBad);
     if (Mem != NULL) free(Mem);
-    if (w != NULL) IccMaxFreeSpectralViewingConditions(w);
+    if (w != NULL) IccMaxRefFreeSpectralViewingConditions(w);
     if (h != NULL) cmsCloseProfile(h);
     if (ctx != NULL) cmsDeleteContext(ctx);
 
@@ -9913,13 +9913,13 @@ Done:
 // Reads the committed hybrid printer fixture's embedded svcn tag and checks it against values
 // produced by the reference implementation, not by our own writer.
 static
-int CheckIccMaxSvcnAgainstFixture(void)
+int CheckIccMaxRefSvcnAgainstFixture(void)
 {
     cmsContext ctx = NULL;
     cmsHPROFILE hOuter = NULL;
     cmsHPROFILE hEmbedded = NULL;
     const cmsICCData* Embedded;
-    IccMaxSpectralViewingConditions* sv;
+    IccMaxRefSpectralViewingConditions* sv;
     int rc = 0;
 
     ctx = WatchDogContext(NULL);
@@ -9928,7 +9928,7 @@ int CheckIccMaxSvcnAgainstFixture(void)
         return 0;
     }
 
-    if (!cmsPluginTHR(ctx, IccMaxGetPlugin())) {
+    if (!cmsPluginTHR(ctx, IccMaxRefGetPlugin())) {
         Fail("Could not register the iccMAX plug-in");
         goto Done;
     }
@@ -9941,7 +9941,7 @@ int CheckIccMaxSvcnAgainstFixture(void)
         goto Done;
     }
 
-    Embedded = (const cmsICCData*) cmsReadTag(hOuter, IccMaxSigEmbeddedV5Tag);
+    Embedded = (const cmsICCData*) cmsReadTag(hOuter, IccMaxRefSigEmbeddedV5Tag);
     if (Embedded == NULL) {
         Fail("Could not read the ICC5 tag");
         goto Done;
@@ -9953,7 +9953,7 @@ int CheckIccMaxSvcnAgainstFixture(void)
         goto Done;
     }
 
-    sv = (IccMaxSpectralViewingConditions*) cmsReadTag(hEmbedded, IccMaxSigSpectralViewingConditionsTag);
+    sv = (IccMaxRefSpectralViewingConditions*) cmsReadTag(hEmbedded, IccMaxRefSigSpectralViewingConditionsTag);
     if (sv == NULL) {
         Fail("Fixture sub-profile has no readable svcn");
         goto Done;
@@ -10046,12 +10046,12 @@ Done:
 
 // --------------------------------------------------------------------------------------------------
 // Spectral PCS header fields (ICC.2 header bytes 100..109), reached only through
-// IccMaxGetSpectralPCSFromMem / IccMaxSetSpectralPCSInMem: no plug-in hook reaches the header
+// IccMaxRefGetSpectralPCSFromMem / IccMaxRefSetSpectralPCSInMem: no plug-in hook reaches the header
 // itself, so these two work on a profile image in memory rather than a cmsHPROFILE.
 // --------------------------------------------------------------------------------------------------
 
 static
-int CheckIccMaxSpectralPCSHeader(void)
+int CheckIccMaxRefSpectralPCSHeader(void)
 {
     cmsContext ctx = NULL;
     cmsHPROFILE hOuter = NULL;
@@ -10075,7 +10075,7 @@ int CheckIccMaxSpectralPCSHeader(void)
     // Not strictly required by the two functions under test -- they operate on a raw byte
     // buffer and neither depends on any signature this plug-in registers -- but registered
     // anyway to match how every other iccMAX check in this file opens the fixture.
-    if (!cmsPluginTHR(ctx, IccMaxGetPlugin())) {
+    if (!cmsPluginTHR(ctx, IccMaxRefGetPlugin())) {
         Fail("Could not register the iccMAX plug-in");
         goto Done;
     }
@@ -10097,7 +10097,7 @@ int CheckIccMaxSpectralPCSHeader(void)
         goto Done;
     }
 
-    RawTagSize = cmsReadRawTag(hOuter, IccMaxSigEmbeddedV5Tag, NULL, 0);
+    RawTagSize = cmsReadRawTag(hOuter, IccMaxRefSigEmbeddedV5Tag, NULL, 0);
     if (RawTagSize < 8 + 128) {
         Fail("ICC5 tag came back implausibly small (%u bytes)", RawTagSize);
         goto Done;
@@ -10106,15 +10106,15 @@ int CheckIccMaxSpectralPCSHeader(void)
     RawTag = (cmsUInt8Number*) malloc(RawTagSize);
     if (RawTag == NULL) { Fail("malloc failed"); goto Done; }
 
-    if (cmsReadRawTag(hOuter, IccMaxSigEmbeddedV5Tag, RawTag, RawTagSize) != RawTagSize) {
+    if (cmsReadRawTag(hOuter, IccMaxRefSigEmbeddedV5Tag, RawTag, RawTagSize) != RawTagSize) {
         Fail("Could not read the raw ICC5 tag");
         goto Done;
     }
 
     PCS = 0; Start = 0.0f; End = 0.0f; Steps = 0;
 
-    if (!IccMaxGetSpectralPCSFromMem(RawTag + 8, RawTagSize - 8, &PCS, &Start, &End, &Steps)) {
-        Fail("IccMaxGetSpectralPCSFromMem refused the fixture sub-profile");
+    if (!IccMaxRefGetSpectralPCSFromMem(RawTag + 8, RawTagSize - 8, &PCS, &Start, &End, &Steps)) {
+        Fail("IccMaxRefGetSpectralPCSFromMem refused the fixture sub-profile");
         goto Done;
     }
 
@@ -10152,15 +10152,15 @@ int CheckIccMaxSpectralPCSHeader(void)
         goto Done;
     }
 
-    if (!IccMaxSetSpectralPCSInMem(Mem, Size, 0x72730024, 400.0f, 700.0f, 42)) {
-        Fail("IccMaxSetSpectralPCSInMem refused a v5.0 profile buffer");
+    if (!IccMaxRefSetSpectralPCSInMem(Mem, Size, 0x72730024, 400.0f, 700.0f, 42)) {
+        Fail("IccMaxRefSetSpectralPCSInMem refused a v5.0 profile buffer");
         goto Done;
     }
 
     PCS = 0; Start = 0.0f; End = 0.0f; Steps = 0;
 
-    if (!IccMaxGetSpectralPCSFromMem(Mem, Size, &PCS, &Start, &End, &Steps)) {
-        Fail("IccMaxGetSpectralPCSFromMem refused the profile it had just been set on");
+    if (!IccMaxRefGetSpectralPCSFromMem(Mem, Size, &PCS, &Start, &End, &Steps)) {
+        Fail("IccMaxRefGetSpectralPCSFromMem refused the profile it had just been set on");
         goto Done;
     }
 
@@ -10199,8 +10199,8 @@ int CheckIccMaxSpectralPCSHeader(void)
         goto Done;
     }
 
-    if (IccMaxSetSpectralPCSInMem(MemV4, SizeV4, 0x72730024, 400.0f, 700.0f, 42)) {
-        Fail("IccMaxSetSpectralPCSInMem accepted a v4.3 profile buffer");
+    if (IccMaxRefSetSpectralPCSInMem(MemV4, SizeV4, 0x72730024, 400.0f, 700.0f, 42)) {
+        Fail("IccMaxRefSetSpectralPCSInMem accepted a v4.3 profile buffer");
         goto Done;
     }
 
@@ -10208,13 +10208,13 @@ int CheckIccMaxSpectralPCSHeader(void)
 
     memset(Small, 0, sizeof(Small));
 
-    if (IccMaxGetSpectralPCSFromMem(Small, sizeof(Small), &PCS, &Start, &End, &Steps)) {
-        Fail("IccMaxGetSpectralPCSFromMem accepted a 127 byte buffer");
+    if (IccMaxRefGetSpectralPCSFromMem(Small, sizeof(Small), &PCS, &Start, &End, &Steps)) {
+        Fail("IccMaxRefGetSpectralPCSFromMem accepted a 127 byte buffer");
         goto Done;
     }
 
-    if (IccMaxSetSpectralPCSInMem(Small, sizeof(Small), 0x72730024, 400.0f, 700.0f, 42)) {
-        Fail("IccMaxSetSpectralPCSInMem accepted a 127 byte buffer");
+    if (IccMaxRefSetSpectralPCSInMem(Small, sizeof(Small), 0x72730024, 400.0f, 700.0f, 42)) {
+        Fail("IccMaxRefSetSpectralPCSInMem accepted a 127 byte buffer");
         goto Done;
     }
 
@@ -10236,7 +10236,7 @@ Done:
 // --------------------------------------------------------------------------------------------------
 // Authoring a hybrid printer profile from nothing, and reading every part of it back.
 //
-// This is the write-side counterpart of CheckIccMaxHybridPrinter, which only reads a committed
+// This is the write-side counterpart of CheckIccMaxRefHybridPrinter, which only reads a committed
 // fixture. An ICC.2 sub-profile is built with cmsCreateProfilePlaceholder and given a swpt, an
 // svcn and a spectral DToB3 through plain cmsWriteTag; it is serialized, its spectral PCS header
 // fields are stamped in, and the result is wrapped into an ICC.1 outer profile's ICC5 tag. The
@@ -10246,20 +10246,20 @@ Done:
 // include/ was changed for it.
 // --------------------------------------------------------------------------------------------------
 
-#define IccMaxAuthorChans  4      // CMYK in, and (for this synthetic profile) 4 spectral out
-#define IccMaxAuthorGrid   5      // CLUT nodes per axis
-#define IccMaxAuthorSpcs   0x72730004u   // 'rs' reflectance spectra, 4 channels
+#define IccMaxRefAuthorChans  4      // CMYK in, and (for this synthetic profile) 4 spectral out
+#define IccMaxRefAuthorGrid   5      // CLUT nodes per axis
+#define IccMaxRefAuthorSpcs   0x72730004u   // 'rs' reflectance spectra, 4 channels
 
 // The spectral range stamped into the authored header. Both endpoints are exactly
 // representable in float16, so the read-back comparison is exact rather than approximate.
 // Used by the stamp, the comparison and the diagnostic alike, so none of the three can drift.
-#define IccMaxAuthorStart  400.0f
-#define IccMaxAuthorEnd    700.0f
-#define IccMaxAuthorSteps  4
+#define IccMaxRefAuthorStart  400.0f
+#define IccMaxRefAuthorEnd    700.0f
+#define IccMaxRefAuthorSteps  4
 
 // The four swpt values, and the three svcn observer/illuminant values, are all exactly
 // representable in float32, so the read-back comparisons are tight rather than approximate.
-static const cmsFloat32Number IccMaxAuthorSwpt[IccMaxAuthorChans] = {
+static const cmsFloat32Number IccMaxRefAuthorSwpt[IccMaxRefAuthorChans] = {
     0.125f, 0.375f, 0.75f, 1.25f     // last one > 1: ordinary for a reflectance, and fl32 keeps it
 };
 
@@ -10270,7 +10270,7 @@ static const cmsFloat32Number IccMaxAuthorSwpt[IccMaxAuthorChans] = {
 // refuses ("Only floats are supported in MPE"); and cmsStageAllocCLutFloat with a NULL table
 // gives a zero-filled grid, not an identity, which is exactly what the all-1.0 probe catches.
 static
-cmsInt32Number IccMaxIdentitySampler(CMSREGISTER const cmsFloat32Number In[],
+cmsInt32Number IccMaxRefIdentitySampler(CMSREGISTER const cmsFloat32Number In[],
                                      CMSREGISTER cmsFloat32Number Out[],
                                      CMSREGISTER void* Cargo)
 {
@@ -10284,10 +10284,10 @@ cmsInt32Number IccMaxIdentitySampler(CMSREGISTER const cmsFloat32Number In[],
 
 // One identity probe, factored out so the three call sites below read as three probes.
 static
-int CheckIccMaxIdentityAt(cmsPipeline* Lut, cmsFloat32Number v0, cmsFloat32Number v1,
+int CheckIccMaxRefIdentityAt(cmsPipeline* Lut, cmsFloat32Number v0, cmsFloat32Number v1,
                           cmsFloat32Number v2, cmsFloat32Number v3)
 {
-    cmsFloat32Number In[IccMaxAuthorChans], Out[IccMaxAuthorChans];
+    cmsFloat32Number In[IccMaxRefAuthorChans], Out[IccMaxRefAuthorChans];
     int i;
 
     In[0] = v0; In[1] = v1; In[2] = v2; In[3] = v3;
@@ -10295,7 +10295,7 @@ int CheckIccMaxIdentityAt(cmsPipeline* Lut, cmsFloat32Number v0, cmsFloat32Numbe
     memset(Out, 0, sizeof(Out));
     cmsPipelineEvalFloat(In, Out, Lut);
 
-    for (i = 0; i < IccMaxAuthorChans; i++) {
+    for (i = 0; i < IccMaxRefAuthorChans; i++) {
 
         // NaN needs a test of its own: fabs(NaN - want) > tol is FALSE, so a NaN would sail
         // through the tolerance check below without a sound.
@@ -10317,23 +10317,23 @@ int CheckIccMaxIdentityAt(cmsPipeline* Lut, cmsFloat32Number v0, cmsFloat32Numbe
 }
 
 static
-int CheckIccMaxAuthorHybridProfile(void)
+int CheckIccMaxRefAuthorHybridProfile(void)
 {
     cmsContext ctx = NULL;
     cmsHPROFILE hSub = NULL;          // the ICC.2 sub-profile being authored
     cmsHPROFILE hOuter = NULL;        // the ICC.1 container being authored
     cmsHPROFILE hReadOuter = NULL;    // the container, reopened from its own bytes
     cmsHPROFILE hReadSub = NULL;      // the sub-profile, reopened from the extracted bytes
-    IccMaxFloatArray* wSwpt = NULL;
-    IccMaxSpectralViewingConditions* wSvcn = NULL;
+    IccMaxRefFloatArray* wSwpt = NULL;
+    IccMaxRefSpectralViewingConditions* wSvcn = NULL;
     cmsPipeline* Lut = NULL;          // ours: cmsWriteTag duplicates, it never takes ownership
     cmsStage* Clut = NULL;            // ours only until cmsPipelineInsertStage accepts it
     cmsUInt8Number* SubMem = NULL;
     cmsUInt8Number* OuterMem = NULL;
     void* Extracted = NULL;
     cmsUInt32Number SubSize = 0, OuterSize = 0, ExtractedSize = 0;
-    const IccMaxFloatArray* rSwpt;
-    const IccMaxSpectralViewingConditions* rSvcn;
+    const IccMaxRefFloatArray* rSwpt;
+    const IccMaxRefSpectralViewingConditions* rSvcn;
     cmsPipeline* rLut;
     cmsUInt32Number PCS, nOut, i;
     cmsFloat32Number Start, End;
@@ -10347,7 +10347,7 @@ int CheckIccMaxAuthorHybridProfile(void)
         return 0;
     }
 
-    if (!cmsPluginTHR(ctx, IccMaxGetPlugin())) {
+    if (!cmsPluginTHR(ctx, IccMaxRefGetPlugin())) {
         Fail("Could not register the iccMAX plug-in");
         goto Done;
     }
@@ -10369,20 +10369,20 @@ int CheckIccMaxAuthorHybridProfile(void)
 
     // --- 2. swpt, four values, written through the registered tag ---
 
-    wSwpt = IccMaxAllocFloatArray(ctx, IccMaxAuthorChans);
+    wSwpt = IccMaxRefAllocFloatArray(ctx, IccMaxRefAuthorChans);
     if (wSwpt == NULL) { Fail("Could not allocate the swpt array"); goto Done; }
 
-    for (i = 0; i < IccMaxAuthorChans; i++)
-        wSwpt ->Values[i] = IccMaxAuthorSwpt[i];
+    for (i = 0; i < IccMaxRefAuthorChans; i++)
+        wSwpt ->Values[i] = IccMaxRefAuthorSwpt[i];
 
-    if (!cmsWriteTag(hSub, IccMaxSigSpectralWhitePointTag, wSwpt)) {
+    if (!cmsWriteTag(hSub, IccMaxRefSigSpectralWhitePointTag, wSwpt)) {
         Fail("Could not write swpt to the authored sub-profile");
         goto Done;
     }
 
     // --- 3. svcn, N = M = 3 ---
 
-    wSvcn = IccMaxAllocSpectralViewingConditions(ctx, N, M);
+    wSvcn = IccMaxRefAllocSpectralViewingConditions(ctx, N, M);
     if (wSvcn == NULL) { Fail("Could not allocate the svcn payload"); goto Done; }
 
     wSvcn ->ObserverType    = 1;          // CIE 1931
@@ -10405,24 +10405,24 @@ int CheckIccMaxAuthorHybridProfile(void)
     wSvcn ->SurroundXYZ.X   = 19.28;  wSvcn ->SurroundXYZ.Y   = 20.0;
     wSvcn ->SurroundXYZ.Z   = 16.50;
 
-    if (!cmsWriteTag(hSub, IccMaxSigSpectralViewingConditionsTag, wSvcn)) {
+    if (!cmsWriteTag(hSub, IccMaxRefSigSpectralViewingConditionsTag, wSvcn)) {
         Fail("Could not write svcn to the authored sub-profile");
         goto Done;
     }
 
     // --- 4. A 4 -> 4 DToB3 whose single stage is a float identity CLUT ---
 
-    nOut = IccMaxAuthorChans;
+    nOut = IccMaxRefAuthorChans;
 
-    Lut = cmsPipelineAlloc(ctx, IccMaxAuthorChans, IccMaxAuthorChans);
+    Lut = cmsPipelineAlloc(ctx, IccMaxRefAuthorChans, IccMaxRefAuthorChans);
     if (Lut == NULL) { Fail("Could not allocate the DToB3 pipeline"); goto Done; }
 
-    Clut = cmsStageAllocCLutFloat(ctx, IccMaxAuthorGrid, IccMaxAuthorChans,
-                                  IccMaxAuthorChans, NULL);
+    Clut = cmsStageAllocCLutFloat(ctx, IccMaxRefAuthorGrid, IccMaxRefAuthorChans,
+                                  IccMaxRefAuthorChans, NULL);
     if (Clut == NULL) { Fail("Could not allocate the float CLUT stage"); goto Done; }
 
     // NULL above gave a zero-filled grid. Sampling is what makes it an identity.
-    if (!cmsStageSampleCLutFloat(Clut, IccMaxIdentitySampler, &nOut, 0)) {
+    if (!cmsStageSampleCLutFloat(Clut, IccMaxRefIdentitySampler, &nOut, 0)) {
         Fail("Could not sample the identity CLUT");
         goto Done;
     }
@@ -10436,7 +10436,7 @@ int CheckIccMaxAuthorHybridProfile(void)
 
     // Sanity: it must be an identity before it is written, or a failure after the round trip
     // would not say whether authoring or serialization broke it.
-    if (!CheckIccMaxIdentityAt(Lut, 1.0f, 1.0f, 1.0f, 1.0f)) goto Done;
+    if (!CheckIccMaxRefIdentityAt(Lut, 1.0f, 1.0f, 1.0f, 1.0f)) goto Done;
 
     if (!cmsWriteTag(hSub, cmsSigDToB3Tag, Lut)) {
         Fail("Could not write DToB3 to the authored sub-profile");
@@ -10460,9 +10460,9 @@ int CheckIccMaxAuthorHybridProfile(void)
 
     // No plug-in hook reaches the header, so the spectral PCS goes in here, on the serialized
     // image, rather than through a tag. 400 and 700 are exact in float16.
-    if (!IccMaxSetSpectralPCSInMem(SubMem, SubSize, IccMaxAuthorSpcs,
-                                   IccMaxAuthorStart, IccMaxAuthorEnd, IccMaxAuthorSteps)) {
-        Fail("IccMaxSetSpectralPCSInMem refused the authored v5.0 sub-profile");
+    if (!IccMaxRefSetSpectralPCSInMem(SubMem, SubSize, IccMaxRefAuthorSpcs,
+                                   IccMaxRefAuthorStart, IccMaxRefAuthorEnd, IccMaxRefAuthorSteps)) {
+        Fail("IccMaxRefSetSpectralPCSInMem refused the authored v5.0 sub-profile");
         goto Done;
     }
 
@@ -10476,8 +10476,8 @@ int CheckIccMaxAuthorHybridProfile(void)
     cmsSetColorSpace(hOuter, cmsSigCmykData);
     cmsSetPCS(hOuter, cmsSigLabData);
 
-    if (!IccMaxEmbedProfile(hOuter, SubMem, SubSize)) {
-        Fail("IccMaxEmbedProfile failed");
+    if (!IccMaxRefEmbedProfile(hOuter, SubMem, SubSize)) {
+        Fail("IccMaxRefEmbedProfile failed");
         goto Done;
     }
 
@@ -10505,8 +10505,8 @@ int CheckIccMaxAuthorHybridProfile(void)
     hReadOuter = cmsOpenProfileFromMemTHR(ctx, OuterMem, OuterSize);
     if (hReadOuter == NULL) { Fail("Could not reopen the outer profile"); goto Done; }
 
-    if (!IccMaxExtractProfile(hReadOuter, &Extracted, &ExtractedSize)) {
-        Fail("IccMaxExtractProfile failed");
+    if (!IccMaxRefExtractProfile(hReadOuter, &Extracted, &ExtractedSize)) {
+        Fail("IccMaxRefExtractProfile failed");
         goto Done;
     }
 
@@ -10523,8 +10523,8 @@ int CheckIccMaxAuthorHybridProfile(void)
 
     PCS = 0; Start = 0.0f; End = 0.0f; Steps = 0;
 
-    if (!IccMaxGetSpectralPCSFromMem(Extracted, ExtractedSize, &PCS, &Start, &End, &Steps)) {
-        Fail("IccMaxGetSpectralPCSFromMem refused the extracted sub-profile");
+    if (!IccMaxRefGetSpectralPCSFromMem(Extracted, ExtractedSize, &PCS, &Start, &End, &Steps)) {
+        Fail("IccMaxRefGetSpectralPCSFromMem refused the extracted sub-profile");
         goto Done;
     }
 
@@ -10536,14 +10536,14 @@ int CheckIccMaxAuthorHybridProfile(void)
     // Expected values live in one place so the comparison and the diagnostic cannot drift
     // apart: a message that still says "400..700" after someone edits the check would send
     // the next reader chasing the wrong field.
-    if (PCS != IccMaxAuthorSpcs ||
-        Start != IccMaxAuthorStart || End != IccMaxAuthorEnd ||
-        Steps != IccMaxAuthorSteps) {
+    if (PCS != IccMaxRefAuthorSpcs ||
+        Start != IccMaxRefAuthorStart || End != IccMaxRefAuthorEnd ||
+        Steps != IccMaxRefAuthorSteps) {
 
         Fail("Extracted spectral PCS is 0x%x range %g..%g steps %u, expected 0x%x range %g..%g steps %u",
              PCS, Start, End, Steps,
-             IccMaxAuthorSpcs, (cmsFloat64Number) IccMaxAuthorStart,
-             (cmsFloat64Number) IccMaxAuthorEnd, IccMaxAuthorSteps);
+             IccMaxRefAuthorSpcs, (cmsFloat64Number) IccMaxRefAuthorStart,
+             (cmsFloat64Number) IccMaxRefAuthorEnd, IccMaxRefAuthorSteps);
         goto Done;
     }
 
@@ -10559,16 +10559,16 @@ int CheckIccMaxAuthorHybridProfile(void)
     }
 
     // swpt
-    rSwpt = (const IccMaxFloatArray*) cmsReadTag(hReadSub, IccMaxSigSpectralWhitePointTag);
+    rSwpt = (const IccMaxRefFloatArray*) cmsReadTag(hReadSub, IccMaxRefSigSpectralWhitePointTag);
     if (rSwpt == NULL) { Fail("Could not read swpt back from the authored profile"); goto Done; }
 
-    if (rSwpt ->nValues != IccMaxAuthorChans) {
+    if (rSwpt ->nValues != IccMaxRefAuthorChans) {
         Fail("Authored swpt came back with %u values, expected %u",
-             rSwpt ->nValues, (cmsUInt32Number) IccMaxAuthorChans);
+             rSwpt ->nValues, (cmsUInt32Number) IccMaxRefAuthorChans);
         goto Done;
     }
 
-    for (i = 0; i < IccMaxAuthorChans; i++) {
+    for (i = 0; i < IccMaxRefAuthorChans; i++) {
 
         if (isnan(rSwpt ->Values[i])) {
             Fail("Authored swpt value %u came back NaN", i);
@@ -10576,16 +10576,16 @@ int CheckIccMaxAuthorHybridProfile(void)
         }
 
         // fl32 is bit-exact, so this is a tight comparison
-        if (fabs(rSwpt ->Values[i] - IccMaxAuthorSwpt[i]) > 1E-6) {
+        if (fabs(rSwpt ->Values[i] - IccMaxRefAuthorSwpt[i]) > 1E-6) {
             Fail("Authored swpt value %u came back %.7f, expected %.7f",
-                 i, rSwpt ->Values[i], IccMaxAuthorSwpt[i]);
+                 i, rSwpt ->Values[i], IccMaxRefAuthorSwpt[i]);
             goto Done;
         }
     }
 
     // svcn: the step counts, and real values from both vectors -- not merely the dimensions
-    rSvcn = (const IccMaxSpectralViewingConditions*)
-                cmsReadTag(hReadSub, IccMaxSigSpectralViewingConditionsTag);
+    rSvcn = (const IccMaxRefSpectralViewingConditions*)
+                cmsReadTag(hReadSub, IccMaxRefSigSpectralViewingConditionsTag);
     if (rSvcn == NULL) { Fail("Could not read svcn back from the authored profile"); goto Done; }
 
     if (rSvcn ->ObserverSteps != N || rSvcn ->IlluminantSteps != M) {
@@ -10610,12 +10610,12 @@ int CheckIccMaxAuthorHybridProfile(void)
     rLut = (cmsPipeline*) cmsReadTag(hReadSub, cmsSigDToB3Tag);
     if (rLut == NULL) { Fail("Could not read DToB3 back from the authored profile"); goto Done; }
 
-    if (cmsPipelineInputChannels(rLut) != IccMaxAuthorChans ||
-        cmsPipelineOutputChannels(rLut) != IccMaxAuthorChans) {
+    if (cmsPipelineInputChannels(rLut) != IccMaxRefAuthorChans ||
+        cmsPipelineOutputChannels(rLut) != IccMaxRefAuthorChans) {
 
         Fail("Authored DToB3 came back %u -> %u, expected %u -> %u",
              cmsPipelineInputChannels(rLut), cmsPipelineOutputChannels(rLut),
-             (cmsUInt32Number) IccMaxAuthorChans, (cmsUInt32Number) IccMaxAuthorChans);
+             (cmsUInt32Number) IccMaxRefAuthorChans, (cmsUInt32Number) IccMaxRefAuthorChans);
         goto Done;
     }
 
@@ -10624,9 +10624,9 @@ int CheckIccMaxAuthorHybridProfile(void)
     // The all-1.0 corner is the load-bearing probe: a zero-filled CLUT -- what
     // cmsStageAllocCLutFloat alone, without the sampling above, would have produced -- returns
     // 0 at the all-0.0 corner too, so that corner alone proves nothing.
-    if (!CheckIccMaxIdentityAt(rLut, 0.0f, 0.0f, 0.0f, 0.0f)) goto Done;
-    if (!CheckIccMaxIdentityAt(rLut, 1.0f, 1.0f, 1.0f, 1.0f)) goto Done;
-    if (!CheckIccMaxIdentityAt(rLut, 0.25f, 0.5f, 0.7f, 0.1f)) goto Done;
+    if (!CheckIccMaxRefIdentityAt(rLut, 0.0f, 0.0f, 0.0f, 0.0f)) goto Done;
+    if (!CheckIccMaxRefIdentityAt(rLut, 1.0f, 1.0f, 1.0f, 1.0f)) goto Done;
+    if (!CheckIccMaxRefIdentityAt(rLut, 0.25f, 0.5f, 0.7f, 0.1f)) goto Done;
 
     rc = 1;
 
@@ -10645,8 +10645,8 @@ Done:
     if (Clut != NULL) cmsStageFree(Clut);
     if (Lut != NULL) cmsPipelineFree(Lut);
 
-    if (wSvcn != NULL) IccMaxFreeSpectralViewingConditions(wSvcn);
-    if (wSwpt != NULL) IccMaxFreeFloatArray(wSwpt);
+    if (wSvcn != NULL) IccMaxRefFreeSpectralViewingConditions(wSvcn);
+    if (wSwpt != NULL) IccMaxRefFreeFloatArray(wSwpt);
 
     if (hReadSub != NULL) cmsCloseProfile(hReadSub);
     if (hReadOuter != NULL) cmsCloseProfile(hReadOuter);
@@ -11605,12 +11605,12 @@ int main(int argc, char* argv[])
     Check("Gamut check on floats", CheckGamutCheckFloats);
     Check("Mixing RAW and Cooked tags", CheckMixedRawAndCooked);
     Check("CLUT overflow rejected", CheckCLUTOverflowRejected);
-    Check("iccMAX hybrid printer spectra via plug-in", CheckIccMaxHybridPrinter);
-    Check("iccMAX spectral white point tag via plug-in", CheckIccMaxSpectralWhitePoint);
-    Check("iccMAX spectral viewing conditions round trip via plug-in", CheckIccMaxSpectralViewingConditions);
-    Check("iccMAX spectral viewing conditions against fixture via plug-in", CheckIccMaxSvcnAgainstFixture);
-    Check("iccMAX spectral PCS header fields on a memory buffer", CheckIccMaxSpectralPCSHeader);
-    Check("iccMAX hybrid printer profile authored end to end via plug-in", CheckIccMaxAuthorHybridProfile);
+    Check("iccMAX hybrid printer spectra via plug-in", CheckIccMaxRefHybridPrinter);
+    Check("iccMAX spectral white point tag via plug-in", CheckIccMaxRefSpectralWhitePoint);
+    Check("iccMAX spectral viewing conditions round trip via plug-in", CheckIccMaxRefSpectralViewingConditions);
+    Check("iccMAX spectral viewing conditions against fixture via plug-in", CheckIccMaxRefSvcnAgainstFixture);
+    Check("iccMAX spectral PCS header fields on a memory buffer", CheckIccMaxRefSpectralPCSHeader);
+    Check("iccMAX hybrid printer profile authored end to end via plug-in", CheckIccMaxRefAuthorHybridProfile);
     }
 
     if (DoPluginTests)

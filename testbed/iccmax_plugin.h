@@ -29,12 +29,12 @@
 //
 // See iccmax_plugin.c for the detail.
 //
-// Every name this header exports begins with IccMax, and nothing sits in the library's own
+// Every name this header exports begins with IccMaxRef, and nothing sits in the library's own
 // cms namespace: this may ship as a package of its own, and a plug-in has no business
 // claiming names that a future version of Little-CMS might want.
 
-#ifndef _IccMaxPlugin_H
-#define _IccMaxPlugin_H
+#ifndef _IccMaxRefPlugin_H
+#define _IccMaxRefPlugin_H
 
 #include "lcms2_plugin.h"
 
@@ -42,47 +42,47 @@
 // because nothing in the library needs to know them: a plug-in brings its own.
 
 // extendedCLUTElement, ICC.2:2023 11.2.7 Table 117
-#define IccMaxSigExtCLutElemType     ((cmsStageSignature)   0x78636C74)  // 'xclt'
+#define IccMaxRefSigExtCLutElemType     ((cmsStageSignature)   0x78636C74)  // 'xclt'
 
 // The tag type holding an embedded ICC.2 profile, and the tag that carries it, from the
 // ICC technical note "Embedding an ICC.2 (iccMAX) profile in an ICC.1 profile"
-#define IccMaxSigEmbeddedProfileType ((cmsTagTypeSignature) 0x49434370)  // 'ICCp'
-#define IccMaxSigEmbeddedV5Tag       ((cmsTagSignature)     0x49434335)  // 'ICC5'
+#define IccMaxRefSigEmbeddedProfileType ((cmsTagTypeSignature) 0x49434370)  // 'ICCp'
+#define IccMaxRefSigEmbeddedV5Tag       ((cmsTagSignature)     0x49434335)  // 'ICC5'
 
 // Wrap a saved ICC.2 profile image as the payload of an 'ICC5' tag on an ICC.1 profile, and
 // recover it. Both work through the registered ICC5 tag and its 'ICCp' tag type, so neither
 // caller sees the 8 byte type-signature-plus-reserved prefix that the tag content carries on
-// disk -- the framework consumes it. IccMaxEmbedProfile copies the bytes; cmsWriteTag never
+// disk -- the framework consumes it. IccMaxRefEmbedProfile copies the bytes; cmsWriteTag never
 // takes ownership, so the caller's buffer stays the caller's.
 //
-// IccMaxExtractProfile allocates *SubProfile with _cmsMalloc against hOuter's context, and the
+// IccMaxRefExtractProfile allocates *SubProfile with _cmsMalloc against hOuter's context, and the
 // caller owns it: release it with _cmsFree(cmsGetProfileContextID(hOuter), *SubProfile). It is
 // a copy of the tag object's bytes, not the object's own storage, so it outlives hOuter. Both
 // out-parameters are required, unlike the optional ones on the header accessors below: a buffer
 // without its length is of no use to anyone.
-CMSAPI cmsBool CMSEXPORT IccMaxEmbedProfile(cmsHPROFILE hOuter, const void* SubProfile,
+CMSAPI cmsBool CMSEXPORT IccMaxRefEmbedProfile(cmsHPROFILE hOuter, const void* SubProfile,
                                              cmsUInt32Number Size);
-CMSAPI cmsBool CMSEXPORT IccMaxExtractProfile(cmsHPROFILE hOuter, void** SubProfile,
+CMSAPI cmsBool CMSEXPORT IccMaxRefExtractProfile(cmsHPROFILE hOuter, void** SubProfile,
                                                cmsUInt32Number* Size);
 
 // The lcms parametric curve types this plug-in defines, being ICC.2 formulaCurveSegment
 // function types 3 to 7 under the "lcms type = ICC type + 6" convention core already uses
 // for ICC types 0, 1 and 2.
-#define IccMaxFirstCurveType         9
-#define IccMaxLastCurveType          13
+#define IccMaxRefFirstCurveType         9
+#define IccMaxRefLastCurveType          13
 
 // float16ArrayType and float32ArrayType, ICC.2:2023 10.2.9 and 10.2.10, and the tag that
 // carries the spectral white point in either of them (or in the core's own uInt16ArrayType).
-#define IccMaxSigFloat16ArrayType        ((cmsTagTypeSignature) 0x666C3136)  // 'fl16'
-#define IccMaxSigFloat32ArrayType        ((cmsTagTypeSignature) 0x666C3332)  // 'fl32'
-#define IccMaxSigSpectralWhitePointTag   ((cmsTagSignature)     0x73777074)  // 'swpt', ICC.2 9.2.112
+#define IccMaxRefSigFloat16ArrayType        ((cmsTagTypeSignature) 0x666C3136)  // 'fl16'
+#define IccMaxRefSigFloat32ArrayType        ((cmsTagTypeSignature) 0x666C3332)  // 'fl32'
+#define IccMaxRefSigSpectralWhitePointTag   ((cmsTagSignature)     0x73777074)  // 'swpt', ICC.2 9.2.112
 
 // spectralViewingConditionsType, ICC.2:2023 10.2.22 (Table 69), and the tag that carries it,
 // ICC.2:2023 9.2.111. ICC.2 reuses the 'svcn' FourCC for both the tag signature and the type
 // signature: the tag directory entry is followed by a nonzero file offset, while the type
 // header at the start of the tag's own data is followed by 4 reserved zero bytes.
-#define IccMaxSigSpectralViewingConditionsType ((cmsTagTypeSignature) 0x7376636E)  // 'svcn'
-#define IccMaxSigSpectralViewingConditionsTag  ((cmsTagSignature)     0x7376636E)  // 'svcn'
+#define IccMaxRefSigSpectralViewingConditionsType ((cmsTagTypeSignature) 0x7376636E)  // 'svcn'
+#define IccMaxRefSigSpectralViewingConditionsTag  ((cmsTagSignature)     0x7376636E)  // 'svcn'
 
 // A bare vector of values, sized by nValues rather than by any fixed per-tag constant. See
 // iccmax_plugin.c for why: TagDescriptor->ElemCount cannot express this tag's length.
@@ -92,20 +92,20 @@ typedef struct {
     cmsUInt32Number    nValues;
     cmsFloat32Number*  Values;
 
-} IccMaxFloatArray;
+} IccMaxRefFloatArray;
 
 // Allocates a zeroed value array. nValues is capped at 0xFFFF, the largest channel count an
 // ICC.2 spectral PCS signature can express (its channel count is a 16 bit field).
-CMSAPI IccMaxFloatArray* CMSEXPORT IccMaxAllocFloatArray(cmsContext ContextID, cmsUInt32Number nValues);
-CMSAPI void              CMSEXPORT IccMaxFreeFloatArray(IccMaxFloatArray* v);
+CMSAPI IccMaxRefFloatArray* CMSEXPORT IccMaxRefAllocFloatArray(cmsContext ContextID, cmsUInt32Number nValues);
+CMSAPI void              CMSEXPORT IccMaxRefFreeFloatArray(IccMaxRefFloatArray* v);
 
 // swpt accessors, working directly over cmsReadRawTag / cmsWriteRawTag so that they can also
 // reach the core's own uInt16ArrayType encoding, which is not registered as a handler here.
-// IccMaxReadSpectralWhitePoint allocates *Out; release it with IccMaxFreeFloatArray.
-CMSAPI cmsBool           CMSEXPORT IccMaxReadSpectralWhitePoint(cmsHPROFILE hProfile,
-                                                                 IccMaxFloatArray** Out);
-CMSAPI cmsBool           CMSEXPORT IccMaxWriteSpectralWhitePoint(cmsHPROFILE hProfile,
-                                                                  const IccMaxFloatArray* In,
+// IccMaxRefReadSpectralWhitePoint allocates *Out; release it with IccMaxRefFreeFloatArray.
+CMSAPI cmsBool           CMSEXPORT IccMaxRefReadSpectralWhitePoint(cmsHPROFILE hProfile,
+                                                                 IccMaxRefFloatArray** Out);
+CMSAPI cmsBool           CMSEXPORT IccMaxRefWriteSpectralWhitePoint(cmsHPROFILE hProfile,
+                                                                  const IccMaxRefFloatArray* In,
                                                                   cmsTagTypeSignature AsType);
 
 // Observer and illuminant for a spectrally-based PCS (ICC.2:2023 Table 69, as corrected on
@@ -132,13 +132,13 @@ typedef struct {
     cmsCIEXYZ          IlluminantXYZ;     // un-normalised, Y in cd/m2
     cmsCIEXYZ          SurroundXYZ;       // un-normalised
 
-} IccMaxSpectralViewingConditions;
+} IccMaxRefSpectralViewingConditions;
 
 // Allocates a zeroed svcn payload with N observer steps and M illuminant steps.
-CMSAPI IccMaxSpectralViewingConditions* CMSEXPORT IccMaxAllocSpectralViewingConditions(
+CMSAPI IccMaxRefSpectralViewingConditions* CMSEXPORT IccMaxRefAllocSpectralViewingConditions(
     cmsContext ContextID, cmsUInt16Number ObserverSteps, cmsUInt16Number IlluminantSteps);
-CMSAPI void                             CMSEXPORT IccMaxFreeSpectralViewingConditions(
-    IccMaxSpectralViewingConditions* v);
+CMSAPI void                             CMSEXPORT IccMaxRefFreeSpectralViewingConditions(
+    IccMaxRefSpectralViewingConditions* v);
 
 // Spectral PCS fields from an ICC.2 profile header, bytes 100..109 (ICC.2:2023 7.2.1). No
 // plug-in hook reaches the header -- plug-ins cannot hook header parsing, nor add fields to
@@ -154,16 +154,16 @@ CMSAPI void                             CMSEXPORT IccMaxFreeSpectralViewingCondi
 // reserved in ICC.1, and writing them would corrupt a v4 profile. Encoding is big-endian
 // throughout: PCS as uInt32 at 100..103, start and end as float16 at 104..107, steps as
 // uInt16 at 108..109.
-CMSAPI cmsBool CMSEXPORT IccMaxGetSpectralPCSFromMem(const void* Profile, cmsUInt32Number Size,
+CMSAPI cmsBool CMSEXPORT IccMaxRefGetSpectralPCSFromMem(const void* Profile, cmsUInt32Number Size,
                                                       cmsUInt32Number* PCS, cmsFloat32Number* Start,
                                                       cmsFloat32Number* End, cmsUInt16Number* Steps);
 
-CMSAPI cmsBool CMSEXPORT IccMaxSetSpectralPCSInMem(void* Profile, cmsUInt32Number Size,
+CMSAPI cmsBool CMSEXPORT IccMaxRefSetSpectralPCSInMem(void* Profile, cmsUInt32Number Size,
                                                     cmsUInt32Number PCS, cmsFloat32Number Start,
                                                     cmsFloat32Number End, cmsUInt16Number Steps);
 
 // Returns the head of a chained plug-in list registering all of the above. Hand it to
 // cmsPlugin or cmsPluginTHR. The list is static, so there is nothing to free.
-CMSAPI cmsPluginBase* CMSEXPORT IccMaxGetPlugin(void);
+CMSAPI cmsPluginBase* CMSEXPORT IccMaxRefGetPlugin(void);
 
 #endif

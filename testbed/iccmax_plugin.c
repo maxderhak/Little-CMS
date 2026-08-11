@@ -203,7 +203,7 @@ void* Type_MPEextclut_Read(struct _cms_typehandler_struct* self, cmsIOHANDLER* i
     // Remember that this element came in as an extendedCLUT, so a writer can find this
     // handler again. Implements stays at cmsSigCLutElemType: it *is* a CLUT, it is merely
     // encoded differently, and the pipeline optimizers key off Implements.
-    mpe ->Type = IccMaxSigExtCLutElemType;
+    mpe ->Type = IccMaxRefSigExtCLutElemType;
 
     clut = (_cmsStageCLutData*) mpe ->Data;
 
@@ -412,7 +412,7 @@ void Type_EmbeddedProfile_Free(struct _cms_typehandler_struct* self, void* Ptr)
 // profile image, so a raw-tag caller would have to skip 8 bytes; a registered-path caller does
 // not, because _cmsReadTypeBase has already consumed them by the time the handler is called.
 
-cmsBool IccMaxEmbedProfile(cmsHPROFILE hOuter, const void* SubProfile, cmsUInt32Number Size)
+cmsBool IccMaxRefEmbedProfile(cmsHPROFILE hOuter, const void* SubProfile, cmsUInt32Number Size)
 {
     cmsContext ContextID;
     cmsICCData* Embedded;
@@ -438,7 +438,7 @@ cmsBool IccMaxEmbedProfile(cmsHPROFILE hOuter, const void* SubProfile, cmsUInt32
 
     // cmsWriteTag duplicates through Type_EmbeddedProfile_Dup and never takes ownership, so
     // this buffer stays ours to release on both the success and the failure path.
-    rc = cmsWriteTag(hOuter, IccMaxSigEmbeddedV5Tag, Embedded);
+    rc = cmsWriteTag(hOuter, IccMaxRefSigEmbeddedV5Tag, Embedded);
 
     _cmsFree(ContextID, Embedded);
     return rc;
@@ -448,7 +448,7 @@ cmsBool IccMaxEmbedProfile(cmsHPROFILE hOuter, const void* SubProfile, cmsUInt32
 // _cmsFree(cmsGetProfileContextID(hOuter), *SubProfile). It is a copy and not the tag object's
 // own bytes on purpose: the object belongs to hOuter and dies with cmsCloseProfile, whereas an
 // extracted sub-profile normally has to outlive the container it came out of.
-cmsBool IccMaxExtractProfile(cmsHPROFILE hOuter, void** SubProfile, cmsUInt32Number* Size)
+cmsBool IccMaxRefExtractProfile(cmsHPROFILE hOuter, void** SubProfile, cmsUInt32Number* Size)
 {
     const cmsICCData* Embedded;
     void* Copy;
@@ -462,7 +462,7 @@ cmsBool IccMaxExtractProfile(cmsHPROFILE hOuter, void** SubProfile, cmsUInt32Num
 
     if (hOuter == NULL) return FALSE;
 
-    Embedded = (const cmsICCData*) cmsReadTag(hOuter, IccMaxSigEmbeddedV5Tag);
+    Embedded = (const cmsICCData*) cmsReadTag(hOuter, IccMaxRefSigEmbeddedV5Tag);
     if (Embedded == NULL) return FALSE;
 
     if (Embedded ->len < 132) return FALSE;
@@ -509,7 +509,7 @@ cmsFloat64Number clipPow(cmsFloat64Number v, cmsFloat64Number g)
 }
 
 static
-cmsFloat64Number IccMaxEvalCurve(cmsInt32Number Type, const cmsFloat64Number Params[], cmsFloat64Number R)
+cmsFloat64Number IccMaxRefEvalCurve(cmsInt32Number Type, const cmsFloat64Number Params[], cmsFloat64Number R)
 {
     switch (Type) {
 
@@ -578,7 +578,7 @@ void* ReadFloatArray(struct _cms_typehandler_struct* self, cmsIOHANDLER* io,
                      cmsUInt32Number* nItems, cmsUInt32Number SizeOfTag,
                      cmsUInt32Number BytesPerValue)
 {
-    IccMaxFloatArray* v;
+    IccMaxRefFloatArray* v;
     cmsUInt32Number i, n;
 
     *nItems = 0;
@@ -586,7 +586,7 @@ void* ReadFloatArray(struct _cms_typehandler_struct* self, cmsIOHANDLER* io,
     n = SizeOfTag / BytesPerValue;
     if (n == 0) return NULL;
 
-    v = IccMaxAllocFloatArray(self ->ContextID, n);
+    v = IccMaxRefAllocFloatArray(self ->ContextID, n);
     if (v == NULL) return NULL;
 
     for (i = 0; i < n; i++) {
@@ -605,7 +605,7 @@ void* ReadFloatArray(struct _cms_typehandler_struct* self, cmsIOHANDLER* io,
     return (void*) v;
 
 Error:
-    IccMaxFreeFloatArray(v);
+    IccMaxRefFreeFloatArray(v);
     return NULL;
 }
 
@@ -623,7 +623,7 @@ cmsBool WriteFloat16Number(cmsIOHANDLER* io, cmsFloat32Number v)
 static
 cmsBool WriteFloatArray(cmsIOHANDLER* io, void* Ptr, cmsUInt32Number BytesPerValue)
 {
-    IccMaxFloatArray* v = (IccMaxFloatArray*) Ptr;
+    IccMaxRefFloatArray* v = (IccMaxRefFloatArray*) Ptr;
     cmsUInt32Number i;
 
     if (v == NULL || v ->Values == NULL) return FALSE;
@@ -648,13 +648,13 @@ cmsBool WriteFloatArray(cmsIOHANDLER* io, void* Ptr, cmsUInt32Number BytesPerVal
 static
 void* Type_FloatArray_Dup(struct _cms_typehandler_struct* self, const void* Ptr, cmsUInt32Number n)
 {
-    const IccMaxFloatArray* v = (const IccMaxFloatArray*) Ptr;
-    IccMaxFloatArray* NewArray;
+    const IccMaxRefFloatArray* v = (const IccMaxRefFloatArray*) Ptr;
+    IccMaxRefFloatArray* NewArray;
 
     if (v == NULL) return NULL;
 
     // Again, the length is v->nValues and not n
-    NewArray = IccMaxAllocFloatArray(self ->ContextID, v ->nValues);
+    NewArray = IccMaxRefAllocFloatArray(self ->ContextID, v ->nValues);
     if (NewArray == NULL) return NULL;
 
     memcpy(NewArray ->Values, v ->Values, v ->nValues * sizeof(cmsFloat32Number));
@@ -667,7 +667,7 @@ void* Type_FloatArray_Dup(struct _cms_typehandler_struct* self, const void* Ptr,
 static
 void Type_FloatArray_Free(struct _cms_typehandler_struct* self, void* Ptr)
 {
-    IccMaxFreeFloatArray((IccMaxFloatArray*) Ptr);
+    IccMaxRefFreeFloatArray((IccMaxRefFloatArray*) Ptr);
 
     cmsUNUSED_PARAMETER(self);
 }
@@ -726,15 +726,15 @@ cmsBool Type_Float32Array_Write(struct _cms_typehandler_struct* self, cmsIOHANDL
 // prefix that a registered handler never sees, so every value offset here is
 // 8 + i * BytesPerValue -- unlike ReadFloatArray/WriteFloatArray above.
 
-IccMaxFloatArray* IccMaxAllocFloatArray(cmsContext ContextID, cmsUInt32Number nValues)
+IccMaxRefFloatArray* IccMaxRefAllocFloatArray(cmsContext ContextID, cmsUInt32Number nValues)
 {
-    IccMaxFloatArray* v;
+    IccMaxRefFloatArray* v;
 
     // An ICC.2 spectral PCS signature carries its channel count in 16 bits, so this is
     // the largest array the tag can legitimately describe.
     if (nValues == 0 || nValues > 0xFFFF) return NULL;
 
-    v = (IccMaxFloatArray*) _cmsMallocZero(ContextID, sizeof(IccMaxFloatArray));
+    v = (IccMaxRefFloatArray*) _cmsMallocZero(ContextID, sizeof(IccMaxRefFloatArray));
     if (v == NULL) return NULL;
 
     // Set ContextID before anything can fail, so every free path uses the allocator the
@@ -752,7 +752,7 @@ IccMaxFloatArray* IccMaxAllocFloatArray(cmsContext ContextID, cmsUInt32Number nV
     return v;
 }
 
-void IccMaxFreeFloatArray(IccMaxFloatArray* v)
+void IccMaxRefFreeFloatArray(IccMaxRefFloatArray* v)
 {
     if (v == NULL) return;
 
@@ -761,10 +761,10 @@ void IccMaxFreeFloatArray(IccMaxFloatArray* v)
     _cmsFree(v ->ContextID, v);
 }
 
-cmsBool IccMaxReadSpectralWhitePoint(cmsHPROFILE hProfile, IccMaxFloatArray** Out)
+cmsBool IccMaxRefReadSpectralWhitePoint(cmsHPROFILE hProfile, IccMaxRefFloatArray** Out)
 {
     cmsUInt8Number* Raw = NULL;
-    IccMaxFloatArray* v = NULL;
+    IccMaxRefFloatArray* v = NULL;
     cmsUInt32Number Size, Type, n, i, BytesPerValue;
 
     if (Out == NULL) return FALSE;
@@ -774,21 +774,21 @@ cmsBool IccMaxReadSpectralWhitePoint(cmsHPROFILE hProfile, IccMaxFloatArray** Ou
     // be read at all. The per-value minimum is applied below, once the encoding is known:
     // checking for 12 here would reject a legitimate single-value fl16 or ui16 tag, which
     // is only 10 bytes, while the writer would happily have produced one.
-    Size = cmsReadRawTag(hProfile, IccMaxSigSpectralWhitePointTag, NULL, 0);
+    Size = cmsReadRawTag(hProfile, IccMaxRefSigSpectralWhitePointTag, NULL, 0);
     if (Size < 8) return FALSE;
 
     Raw = (cmsUInt8Number*) _cmsMalloc(cmsGetProfileContextID(hProfile), Size);
     if (Raw == NULL) return FALSE;
 
-    if (cmsReadRawTag(hProfile, IccMaxSigSpectralWhitePointTag, Raw, Size) != Size) goto Error;
+    if (cmsReadRawTag(hProfile, IccMaxRefSigSpectralWhitePointTag, Raw, Size) != Size) goto Error;
 
     // Bytes 0..3 are the type signature, 4..7 reserved, the values follow
     Type = _cmsAdjustEndianess32(*(cmsUInt32Number*) Raw);
 
     switch (Type) {
 
-        case IccMaxSigFloat32ArrayType: BytesPerValue = 4; break;
-        case IccMaxSigFloat16ArrayType: BytesPerValue = 2; break;
+        case IccMaxRefSigFloat32ArrayType: BytesPerValue = 4; break;
+        case IccMaxRefSigFloat16ArrayType: BytesPerValue = 2; break;
         case cmsSigUInt16ArrayType:     BytesPerValue = 2; break;
 
         default:
@@ -803,19 +803,19 @@ cmsBool IccMaxReadSpectralWhitePoint(cmsHPROFILE hProfile, IccMaxFloatArray** Ou
     n = (Size - 8) / BytesPerValue;
     if (n == 0) goto Error;
 
-    v = IccMaxAllocFloatArray(cmsGetProfileContextID(hProfile), n);
+    v = IccMaxRefAllocFloatArray(cmsGetProfileContextID(hProfile), n);
     if (v == NULL) goto Error;
 
     for (i = 0; i < n; i++) {
 
         cmsUInt8Number* p = Raw + 8 + i * BytesPerValue;
 
-        if (Type == IccMaxSigFloat32ArrayType) {
+        if (Type == IccMaxRefSigFloat32ArrayType) {
 
             cmsUInt32Number bits = _cmsAdjustEndianess32(*(cmsUInt32Number*) p);
             memcpy(&v ->Values[i], &bits, sizeof(cmsFloat32Number));
         }
-        else if (Type == IccMaxSigFloat16ArrayType) {
+        else if (Type == IccMaxRefSigFloat16ArrayType) {
 
             v ->Values[i] = _cmsHalf2Float(_cmsAdjustEndianess16(*(cmsUInt16Number*) p));
         }
@@ -832,13 +832,13 @@ cmsBool IccMaxReadSpectralWhitePoint(cmsHPROFILE hProfile, IccMaxFloatArray** Ou
     return TRUE;
 
 Error:
-    if (v != NULL) IccMaxFreeFloatArray(v);
+    if (v != NULL) IccMaxRefFreeFloatArray(v);
     if (Raw != NULL) _cmsFree(cmsGetProfileContextID(hProfile), Raw);
     return FALSE;
 }
 
-cmsBool IccMaxWriteSpectralWhitePoint(cmsHPROFILE hProfile,
-                                      const IccMaxFloatArray* In,
+cmsBool IccMaxRefWriteSpectralWhitePoint(cmsHPROFILE hProfile,
+                                      const IccMaxRefFloatArray* In,
                                       cmsTagTypeSignature AsType)
 {
     cmsUInt8Number* Raw = NULL;
@@ -847,7 +847,7 @@ cmsBool IccMaxWriteSpectralWhitePoint(cmsHPROFILE hProfile,
 
     if (In == NULL || In ->Values == NULL || In ->nValues == 0) return FALSE;
 
-    // IccMaxAllocFloatArray caps nValues at 0xFFFF, but IccMaxFloatArray is a public struct
+    // IccMaxRefAllocFloatArray caps nValues at 0xFFFF, but IccMaxRefFloatArray is a public struct
     // and nothing stops a caller from populating one by hand and setting nValues past that
     // bound. Without this guard, "8 + In->nValues * BytesPerValue" below can wrap a 32 bit
     // Size to a tiny value, so the allocation would succeed far too small and the write loop
@@ -860,8 +860,8 @@ cmsBool IccMaxWriteSpectralWhitePoint(cmsHPROFILE hProfile,
     // not one of the switched-on enum's enumerators.
     switch ((cmsUInt32Number) AsType) {
 
-        case IccMaxSigFloat32ArrayType: BytesPerValue = 4; break;
-        case IccMaxSigFloat16ArrayType: BytesPerValue = 2; break;
+        case IccMaxRefSigFloat32ArrayType: BytesPerValue = 4; break;
+        case IccMaxRefSigFloat16ArrayType: BytesPerValue = 2; break;
         case cmsSigUInt16ArrayType:     BytesPerValue = 2; break;
 
         default:
@@ -882,13 +882,13 @@ cmsBool IccMaxWriteSpectralWhitePoint(cmsHPROFILE hProfile,
 
         cmsUInt8Number* p = Raw + 8 + i * BytesPerValue;
 
-        if (AsType == IccMaxSigFloat32ArrayType) {
+        if (AsType == IccMaxRefSigFloat32ArrayType) {
 
             cmsUInt32Number bits;
             memcpy(&bits, &In ->Values[i], sizeof(cmsUInt32Number));
             *(cmsUInt32Number*) p = _cmsAdjustEndianess32(bits);
         }
-        else if (AsType == IccMaxSigFloat16ArrayType) {
+        else if (AsType == IccMaxRefSigFloat16ArrayType) {
 
             *(cmsUInt16Number*) p = _cmsAdjustEndianess16(_cmsFloat2Half(In ->Values[i]));
         }
@@ -908,14 +908,14 @@ cmsBool IccMaxWriteSpectralWhitePoint(cmsHPROFILE hProfile,
         }
     }
 
-    rc = cmsWriteRawTag(hProfile, IccMaxSigSpectralWhitePointTag, Raw, Size);
+    rc = cmsWriteRawTag(hProfile, IccMaxRefSigSpectralWhitePointTag, Raw, Size);
 
     _cmsFree(cmsGetProfileContextID(hProfile), Raw);
     return rc;
 }
 
 // Free defined before Alloc, so Alloc's partial-failure path can call it.
-void IccMaxFreeSpectralViewingConditions(IccMaxSpectralViewingConditions* v)
+void IccMaxRefFreeSpectralViewingConditions(IccMaxRefSpectralViewingConditions* v)
 {
     if (v == NULL) return;
 
@@ -927,15 +927,15 @@ void IccMaxFreeSpectralViewingConditions(IccMaxSpectralViewingConditions* v)
 
 // Observer and illuminant step counts are independent of each other and of the spectral PCS
 // channel count (ICC.2:2023 Table 69) -- nothing here assumes they agree.
-IccMaxSpectralViewingConditions* IccMaxAllocSpectralViewingConditions(cmsContext ContextID,
+IccMaxRefSpectralViewingConditions* IccMaxRefAllocSpectralViewingConditions(cmsContext ContextID,
                                                                        cmsUInt16Number ObserverSteps,
                                                                        cmsUInt16Number IlluminantSteps)
 {
-    IccMaxSpectralViewingConditions* v;
+    IccMaxRefSpectralViewingConditions* v;
 
     if (ObserverSteps == 0 || IlluminantSteps == 0) return NULL;
 
-    v = (IccMaxSpectralViewingConditions*) _cmsMallocZero(ContextID, sizeof(IccMaxSpectralViewingConditions));
+    v = (IccMaxRefSpectralViewingConditions*) _cmsMallocZero(ContextID, sizeof(IccMaxRefSpectralViewingConditions));
     if (v == NULL) return NULL;
 
     // Set ContextID immediately after the struct allocation, before either array allocation,
@@ -950,7 +950,7 @@ IccMaxSpectralViewingConditions* IccMaxAllocSpectralViewingConditions(cmsContext
 
     if (v ->Observer == NULL || v ->Illuminant == NULL) {
 
-        IccMaxFreeSpectralViewingConditions(v);
+        IccMaxRefFreeSpectralViewingConditions(v);
         return NULL;
     }
 
@@ -993,7 +993,7 @@ static
 void* Type_SpectralViewingConditions_Read(struct _cms_typehandler_struct* self, cmsIOHANDLER* io,
                                           cmsUInt32Number* nItems, cmsUInt32Number SizeOfTag)
 {
-    IccMaxSpectralViewingConditions* sv = NULL;
+    IccMaxRefSpectralViewingConditions* sv = NULL;
     cmsFloat32Number* Observer = NULL;
     cmsUInt32Number ObserverType, IlluminantType;
     cmsFloat32Number ObserverStart, ObserverEnd, IlluminantStart, IlluminantEnd, CCT;
@@ -1060,7 +1060,7 @@ void* Type_SpectralViewingConditions_Read(struct _cms_typehandler_struct* self, 
     if (SizeOfTag < 12u + 12u * (cmsUInt32Number) N + 16u + 4u * (cmsUInt32Number) M + 24u)
         goto Error;
 
-    sv = IccMaxAllocSpectralViewingConditions(self ->ContextID, N, M);
+    sv = IccMaxRefAllocSpectralViewingConditions(self ->ContextID, N, M);
     if (sv == NULL) goto Error;
 
     memcpy(sv ->Observer, Observer, n3 * sizeof(cmsFloat32Number));
@@ -1100,7 +1100,7 @@ void* Type_SpectralViewingConditions_Read(struct _cms_typehandler_struct* self, 
 
 Error:
     if (Observer != NULL) _cmsFree(self ->ContextID, Observer);
-    if (sv != NULL) IccMaxFreeSpectralViewingConditions(sv);
+    if (sv != NULL) IccMaxRefFreeSpectralViewingConditions(sv);
     return NULL;
 }
 
@@ -1108,7 +1108,7 @@ static
 cmsBool Type_SpectralViewingConditions_Write(struct _cms_typehandler_struct* self, cmsIOHANDLER* io,
                                              void* Ptr, cmsUInt32Number nItems)
 {
-    IccMaxSpectralViewingConditions* sv = (IccMaxSpectralViewingConditions*) Ptr;
+    IccMaxRefSpectralViewingConditions* sv = (IccMaxRefSpectralViewingConditions*) Ptr;
     cmsUInt32Number i, n3, m;
     cmsFloat32Number fx, fy, fz;
 
@@ -1162,8 +1162,8 @@ cmsBool Type_SpectralViewingConditions_Write(struct _cms_typehandler_struct* sel
 static
 void* Type_SpectralViewingConditions_Dup(struct _cms_typehandler_struct* self, const void* Ptr, cmsUInt32Number n)
 {
-    const IccMaxSpectralViewingConditions* sv = (const IccMaxSpectralViewingConditions*) Ptr;
-    IccMaxSpectralViewingConditions* New;
+    const IccMaxRefSpectralViewingConditions* sv = (const IccMaxRefSpectralViewingConditions*) Ptr;
+    IccMaxRefSpectralViewingConditions* New;
 
     // Same guard Write applies. Not reachable from profile bytes -- a struct that made it
     // this far from a Read always has both arrays -- but cmsWriteTag calls Dup before Write,
@@ -1174,7 +1174,7 @@ void* Type_SpectralViewingConditions_Dup(struct _cms_typehandler_struct* self, c
     // Lengths come from the object's own ObserverSteps/IlluminantSteps, never from n, which
     // is TagDescriptor->ElemCount, a fixed constant (1 for this tag) -- using n here once
     // truncated the ICC5 tag's Dup to one byte earlier in this project.
-    New = IccMaxAllocSpectralViewingConditions(self ->ContextID, sv ->ObserverSteps, sv ->IlluminantSteps);
+    New = IccMaxRefAllocSpectralViewingConditions(self ->ContextID, sv ->ObserverSteps, sv ->IlluminantSteps);
     if (New == NULL) return NULL;
 
     memcpy(New ->Observer, sv ->Observer,
@@ -1200,7 +1200,7 @@ void* Type_SpectralViewingConditions_Dup(struct _cms_typehandler_struct* self, c
 static
 void Type_SpectralViewingConditions_Free(struct _cms_typehandler_struct* self, void* Ptr)
 {
-    IccMaxFreeSpectralViewingConditions((IccMaxSpectralViewingConditions*) Ptr);
+    IccMaxRefFreeSpectralViewingConditions((IccMaxRefSpectralViewingConditions*) Ptr);
 
     cmsUNUSED_PARAMETER(self);
 }
@@ -1227,7 +1227,7 @@ void Type_SpectralViewingConditions_Free(struct _cms_typehandler_struct* self, v
 // two different header fields sixteen bytes apart, and easy to confuse when reading the spec
 // tables side by side. Absolute offsets sidestep it.
 
-cmsBool IccMaxGetSpectralPCSFromMem(const void* Profile, cmsUInt32Number Size,
+cmsBool IccMaxRefGetSpectralPCSFromMem(const void* Profile, cmsUInt32Number Size,
                                     cmsUInt32Number* PCS, cmsFloat32Number* Start,
                                     cmsFloat32Number* End, cmsUInt16Number* Steps)
 {
@@ -1250,7 +1250,7 @@ cmsBool IccMaxGetSpectralPCSFromMem(const void* Profile, cmsUInt32Number Size,
     return TRUE;
 }
 
-cmsBool IccMaxSetSpectralPCSInMem(void* Profile, cmsUInt32Number Size,
+cmsBool IccMaxRefSetSpectralPCSInMem(void* Profile, cmsUInt32Number Size,
                                   cmsUInt32Number PCS, cmsFloat32Number Start,
                                   cmsFloat32Number End, cmsUInt16Number Steps)
 {
@@ -1285,61 +1285,61 @@ cmsBool IccMaxSetSpectralPCSInMem(void* Profile, cmsUInt32Number Size,
 // The plug-in list
 // ********************************************************************************
 //
-// Chained back to front so that IccMaxGetPlugin can return a single head. Every entry
+// Chained back to front so that IccMaxRefGetPlugin can return a single head. Every entry
 // is an addition: none of these nine signatures is handled by the library.
 
-static cmsPluginParametricCurves IccMaxCurvesPlugin = {
+static cmsPluginParametricCurves IccMaxRefCurvesPlugin = {
 
     { cmsPluginMagicNumber, 2060, cmsPluginParametricCurveSig, NULL },
 
     5,                                    // Five function types
     { 9, 10, 11, 12, 13 },                // ICC.2 Table 111 types 3 to 7, plus 6
     { 5,  5,  6,  7,  6 },                // Parameters each takes
-    IccMaxEvalCurve
+    IccMaxRefEvalCurve
 };
 
-static cmsPluginTag IccMaxEmbeddedTagPlugin = {
+static cmsPluginTag IccMaxRefEmbeddedTagPlugin = {
 
-    { cmsPluginMagicNumber, 2060, cmsPluginTagSig, (cmsPluginBase*) &IccMaxCurvesPlugin },
+    { cmsPluginMagicNumber, 2060, cmsPluginTagSig, (cmsPluginBase*) &IccMaxRefCurvesPlugin },
 
-    IccMaxSigEmbeddedV5Tag,
-    { 1, 1, { IccMaxSigEmbeddedProfileType }, NULL }
+    IccMaxRefSigEmbeddedV5Tag,
+    { 1, 1, { IccMaxRefSigEmbeddedProfileType }, NULL }
 };
 
-static cmsPluginTagType IccMaxEmbeddedTypePlugin = {
+static cmsPluginTagType IccMaxRefEmbeddedTypePlugin = {
 
-    { cmsPluginMagicNumber, 2060, cmsPluginTagTypeSig, (cmsPluginBase*) &IccMaxEmbeddedTagPlugin },
+    { cmsPluginMagicNumber, 2060, cmsPluginTagTypeSig, (cmsPluginBase*) &IccMaxRefEmbeddedTagPlugin },
 
-    { IccMaxSigEmbeddedProfileType,
+    { IccMaxRefSigEmbeddedProfileType,
       Type_EmbeddedProfile_Read, Type_EmbeddedProfile_Write,
       Type_EmbeddedProfile_Dup,  Type_EmbeddedProfile_Free, NULL, 0 }
 };
 
-static cmsPluginMultiProcessElement IccMaxExtClutPlugin = {
+static cmsPluginMultiProcessElement IccMaxRefExtClutPlugin = {
 
     { cmsPluginMagicNumber, 2060, cmsPluginMultiProcessElementSig,
-      (cmsPluginBase*) &IccMaxEmbeddedTypePlugin },
+      (cmsPluginBase*) &IccMaxRefEmbeddedTypePlugin },
 
-    { (cmsTagTypeSignature) IccMaxSigExtCLutElemType,
+    { (cmsTagTypeSignature) IccMaxRefSigExtCLutElemType,
       Type_MPEextclut_Read, Type_MPEextclut_Write,
       MPEextclut_Dup, MPEextclut_Free, NULL, 0 }
 };
 
-static cmsPluginTagType IccMaxFloat16ArrayTypePlugin = {
+static cmsPluginTagType IccMaxRefFloat16ArrayTypePlugin = {
 
-    { cmsPluginMagicNumber, 2060, cmsPluginTagTypeSig, (cmsPluginBase*) &IccMaxExtClutPlugin },
+    { cmsPluginMagicNumber, 2060, cmsPluginTagTypeSig, (cmsPluginBase*) &IccMaxRefExtClutPlugin },
 
-    { IccMaxSigFloat16ArrayType,
+    { IccMaxRefSigFloat16ArrayType,
       Type_Float16Array_Read, Type_Float16Array_Write,
       Type_Float16Array_Dup,  Type_Float16Array_Free, NULL, 0 }
 };
 
-static cmsPluginTagType IccMaxFloat32ArrayTypePlugin = {
+static cmsPluginTagType IccMaxRefFloat32ArrayTypePlugin = {
 
     { cmsPluginMagicNumber, 2060, cmsPluginTagTypeSig,
-      (cmsPluginBase*) &IccMaxFloat16ArrayTypePlugin },
+      (cmsPluginBase*) &IccMaxRefFloat16ArrayTypePlugin },
 
-    { IccMaxSigFloat32ArrayType,
+    { IccMaxRefSigFloat32ArrayType,
       Type_Float32Array_Read, Type_Float32Array_Write,
       Type_Float32Array_Dup,  Type_Float32Array_Free, NULL, 0 }
 };
@@ -1347,34 +1347,34 @@ static cmsPluginTagType IccMaxFloat32ArrayTypePlugin = {
 // fl32 first and DecideType NULL, so both encodings are readable while writes always choose
 // the lossless one. Both entries have to stay: cmsReadTag calls IsTypeSupported on the read
 // path, so dropping fl16 here would make a real fl16-encoded profile unreadable.
-static cmsPluginTag IccMaxSpectralWhitePointTagPlugin = {
+static cmsPluginTag IccMaxRefSpectralWhitePointTagPlugin = {
 
-    { cmsPluginMagicNumber, 2060, cmsPluginTagSig, (cmsPluginBase*) &IccMaxFloat32ArrayTypePlugin },
+    { cmsPluginMagicNumber, 2060, cmsPluginTagSig, (cmsPluginBase*) &IccMaxRefFloat32ArrayTypePlugin },
 
-    IccMaxSigSpectralWhitePointTag,
-    { 1, 2, { IccMaxSigFloat32ArrayType, IccMaxSigFloat16ArrayType }, NULL }
+    IccMaxRefSigSpectralWhitePointTag,
+    { 1, 2, { IccMaxRefSigFloat32ArrayType, IccMaxRefSigFloat16ArrayType }, NULL }
 };
 
-static cmsPluginTagType IccMaxSpectralViewingConditionsTypePlugin = {
+static cmsPluginTagType IccMaxRefSpectralViewingConditionsTypePlugin = {
 
     { cmsPluginMagicNumber, 2060, cmsPluginTagTypeSig,
-      (cmsPluginBase*) &IccMaxSpectralWhitePointTagPlugin },
+      (cmsPluginBase*) &IccMaxRefSpectralWhitePointTagPlugin },
 
-    { IccMaxSigSpectralViewingConditionsType,
+    { IccMaxRefSigSpectralViewingConditionsType,
       Type_SpectralViewingConditions_Read, Type_SpectralViewingConditions_Write,
       Type_SpectralViewingConditions_Dup,  Type_SpectralViewingConditions_Free, NULL, 0 }
 };
 
-static cmsPluginTag IccMaxSpectralViewingConditionsTagPlugin = {
+static cmsPluginTag IccMaxRefSpectralViewingConditionsTagPlugin = {
 
     { cmsPluginMagicNumber, 2060, cmsPluginTagSig,
-      (cmsPluginBase*) &IccMaxSpectralViewingConditionsTypePlugin },
+      (cmsPluginBase*) &IccMaxRefSpectralViewingConditionsTypePlugin },
 
-    IccMaxSigSpectralViewingConditionsTag,
-    { 1, 1, { IccMaxSigSpectralViewingConditionsType }, NULL }
+    IccMaxRefSigSpectralViewingConditionsTag,
+    { 1, 1, { IccMaxRefSigSpectralViewingConditionsType }, NULL }
 };
 
-cmsPluginBase* CMSEXPORT IccMaxGetPlugin(void)
+cmsPluginBase* CMSEXPORT IccMaxRefGetPlugin(void)
 {
-    return (cmsPluginBase*) &IccMaxSpectralViewingConditionsTagPlugin;
+    return (cmsPluginBase*) &IccMaxRefSpectralViewingConditionsTagPlugin;
 }
