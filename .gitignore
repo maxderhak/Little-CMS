@@ -62,3 +62,6 @@ DerivedData
 *.recipe
 *.idb
 *.lastcodeanalysissucceeded
+
+# Local scratch: plans, task briefs and review notes. Never part of a build.
+.superpowers/
