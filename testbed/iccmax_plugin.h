@@ -140,27 +140,44 @@ CMSAPI IccMaxRefSpectralViewingConditions* CMSEXPORT IccMaxRefAllocSpectralViewi
 CMSAPI void                             CMSEXPORT IccMaxRefFreeSpectralViewingConditions(
     IccMaxRefSpectralViewingConditions* v);
 
-// Spectral PCS fields from an ICC.2 profile header, bytes 100..109 (ICC.2:2023 7.2.1). No
-// plug-in hook reaches the header -- plug-ins cannot hook header parsing, nor add fields to
-// _cmsICCPROFILE -- so these operate on a profile image in memory instead of a cmsHPROFILE.
-// That is not a workaround: the sub-profile already exists that way on both sides of the
-// hybrid-printer use case. On read, it arrives as bytes out of the containing profile's ICC5
-// tag; on write, cmsSaveProfileToMem produces exactly this kind of buffer, and the caller
-// patches bytes 100..109 before wrapping the result back into an ICC5 tag.
+// Spectral PCS fields from an ICC.2 profile header, bytes 100..109 (ICC.2:2023 7.2.1).
 //
-// Both validate Size >= 128 before touching anything. Every output pointer is optional (NULL
-// means "don't want it"), matching the convention cmsGetSpectralPCSRange uses on the other
-// branch. Set refuses a profile whose header major version is below 5: those bytes are
-// reserved in ICC.1, and writing them would corrupt a v4 profile. Encoding is big-endian
-// throughout: PCS as uInt32 at 100..103, start and end as float16 at 104..107, steps as
-// uInt16 at 108..109.
-CMSAPI cmsBool CMSEXPORT IccMaxRefGetSpectralPCSFromMem(const void* Profile, cmsUInt32Number Size,
-                                                      cmsUInt32Number* PCS, cmsFloat32Number* Start,
-                                                      cmsFloat32Number* End, cmsUInt16Number* Steps);
+//     100..103  spectral PCS signature   uInt32Number, 0 if the PCS is not spectral
+//     104..105  spectral range start     float16Number, nm
+//     106..107  spectral range end       float16Number, nm
+//     108..109  spectral range steps     uInt16Number
+//
+// These are reached through the header plug-in hook that Little-CMS 2.19 added, so they work
+// on a cmsHPROFILE like every other profile accessor: the read callback picks the fields up
+// while the profile is being opened, and the write callback puts them back during
+// cmsSaveProfileToMem or cmsSaveProfileToFile. A profile therefore carries its spectral PCS
+// across a save-and-reopen round trip, which no amount of patching a serialized image could
+// give you.
+//
+// The fields live in the profile's plug-in user data (_cmsSetProfileUserData), which is a
+// single untagged slot shared by every plug-in on the profile: this plug-in owns it, and no
+// other plug-in registered alongside may use it.
+//
+// Every Get output pointer is optional (NULL means "don't want it"), matching the convention
+// cmsGetSpectralPCSRange uses on the other branch. Get returns FALSE when the profile carries
+// no spectral PCS at all, which is the ordinary case for an ICC.1 profile.
+//
+// Set refuses a profile whose header major version is below 5: those bytes are reserved in
+// ICC.1, and writing them would corrupt a v4 profile. Set the version first. A PCS of 0 means
+// "this profile has no spectral PCS": Set clears the fields and releases their storage, and
+// the write callback then leaves bytes 100..109 as the zeros the core already wrote there.
+//
+// Clearing matters for more than tidiness. Little-CMS 2.19 does not release a profile's
+// plug-in user data when cmsCloseProfile is called -- see the note in iccmax_plugin.c -- so
+// until it does, a caller that wants the storage back must ask for it with
+// IccMaxRefSetSpectralPCS(hProfile, 0, 0.0f, 0.0f, 0) before closing the profile.
+CMSAPI cmsBool CMSEXPORT IccMaxRefGetSpectralPCS(cmsHPROFILE hProfile, cmsUInt32Number* PCS,
+                                                 cmsFloat32Number* Start, cmsFloat32Number* End,
+                                                 cmsUInt16Number* Steps);
 
-CMSAPI cmsBool CMSEXPORT IccMaxRefSetSpectralPCSInMem(void* Profile, cmsUInt32Number Size,
-                                                    cmsUInt32Number PCS, cmsFloat32Number Start,
-                                                    cmsFloat32Number End, cmsUInt16Number Steps);
+CMSAPI cmsBool CMSEXPORT IccMaxRefSetSpectralPCS(cmsHPROFILE hProfile, cmsUInt32Number PCS,
+                                                 cmsFloat32Number Start, cmsFloat32Number End,
+                                                 cmsUInt16Number Steps);
 
 // Returns the head of a chained plug-in list registering all of the above. Hand it to
 // cmsPlugin or cmsPluginTHR. The list is static, so there is nothing to free.

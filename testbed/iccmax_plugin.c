@@ -1210,87 +1210,200 @@ void Type_SpectralViewingConditions_Free(struct _cms_typehandler_struct* self, v
 // Spectral PCS header fields, ICC.2:2023 7.2.1 -- bytes 100..109 of the profile header
 // ********************************************************************************
 //
-// Nothing here is a plug-in hook: no plug-in mechanism reaches header parsing, so these two
-// functions work directly on a profile image in memory rather than on a cmsHPROFILE. See the
-// header comment in iccmax_plugin.h for why that is exactly the shape the hybrid-printer use
-// case already needs, on both the read and the write side.
+// These four fields are the one part of an ICC.2 profile that lives in the 128 byte header
+// rather than in a tag:
 //
 //     100..103  spectral PCS signature   uInt32Number, 0 if the PCS is not spectral
 //     104..105  spectral range start     float16Number, nm
 //     106..107  spectral range end       float16Number, nm
 //     108..109  spectral range steps     uInt16Number
 //
-// These offsets are absolute, counted from the start of the profile image, rather than
-// expressed as indices into the 28 byte reserved area of cmsICCHeader that begins at byte 100.
-// Both spellings are correct, but the index form invites an off-by-16: reserved[0] is byte 100,
-// the spectral PCS, while reserved[16] is byte 116, the multiplex colour space signature --
-// two different header fields sixteen bytes apart, and easy to confuse when reading the spec
+// The offsets are absolute, counted from the start of the profile image, rather than expressed
+// as indices into the 28 byte reserved area of cmsICCHeader that begins at byte 100. Both
+// spellings are correct, but the index form invites an off-by-16: reserved[0] is byte 100, the
+// spectral PCS, while reserved[16] is byte 116, the multiplex colour space signature -- two
+// different header fields sixteen bytes apart, and easy to confuse when reading the spec
 // tables side by side. Absolute offsets sidestep it.
+//
+// Little-CMS 2.19 added a header plug-in type, so the fields are read and written through the
+// library rather than by patching a serialized image from outside. The two callbacks below are
+// bracketed by the framework with Tell and Seek, so they may seek freely and must not close
+// the handler; on entry the position is 128, just past the header.
+//
+// Two things about the read callback matter more than anything else here. It runs for every
+// profile opened on the context, ordinary v2 and v4 ones included, and returning FALSE aborts
+// the open -- so it returns TRUE for everything, and only stores something when it finds a
+// nonzero spectral PCS signature. And it does not police what it finds: this plug-in stores
+// the fields as they are encoded, in keeping with the library's own habit of not enforcing
+// conformance on read. A profile whose declared step count disagrees with its spectral PCS
+// channel count still opens, and still reports what it says.
+//
+// The storage is the profile's plug-in user data. That slot is a single untagged void*, so
+// this plug-in claims it exclusively: another plug-in registered on the same context must not
+// use _cmsSetProfileUserData. And note that Little-CMS 2.19 does not free the slot when
+// cmsCloseProfile is called -- neither the profile's own free path nor cmsDeleteContext
+// touches it -- so a caller that closes a profile carrying a spectral PCS leaks this block
+// unless it first clears it with IccMaxRefSetSpectralPCS(hProfile, 0, 0.0f, 0.0f, 0). That is
+// a gap in the extension point rather than something a plug-in can fix from outside, and the
+// checks in testcms2.c clear the field before closing for exactly that reason.
 
-cmsBool IccMaxRefGetSpectralPCSFromMem(const void* Profile, cmsUInt32Number Size,
-                                    cmsUInt32Number* PCS, cmsFloat32Number* Start,
-                                    cmsFloat32Number* End, cmsUInt16Number* Steps)
+typedef struct {
+
+    cmsUInt32Number    PCS;      // spectral PCS signature, never 0 for a stored record
+    cmsFloat32Number   Start;    // nm
+    cmsFloat32Number   End;      // nm
+    cmsUInt16Number    Steps;
+
+} IccMaxRefSpectralPCS;
+
+static
+void FreeSpectralPCS(cmsContext ContextID, void* Data)
 {
-    const cmsUInt8Number* p = (const cmsUInt8Number*) Profile;
-    cmsUInt32Number RawPCS;
-    cmsUInt16Number RawStart, RawEnd, RawSteps;
+    _cmsFree(ContextID, Data);
+}
 
-    if (Profile == NULL || Size < 128) return FALSE;
+// Bytes 100..109 are reserved in ICC.1, so writing them into a v4 or earlier profile would
+// corrupt it. Both Set and the write callback gate on this: Set catches the ordinary mistake,
+// and the callback catches a profile whose version was lowered after the field was set.
+static
+cmsBool IsSpectralCapableVersion(cmsHPROFILE hProfile)
+{
+    return (cmsGetEncodedICCversion(hProfile) >> 24) >= 5;
+}
 
-    memmove(&RawPCS,   p + 100, 4);
-    memmove(&RawStart, p + 104, 2);
-    memmove(&RawEnd,   p + 106, 2);
-    memmove(&RawSteps, p + 108, 2);
+// Header read callback. Returns TRUE for every profile: see the note above.
+static
+cmsBool IccMaxRefReadHeader(cmsContext ContextID, cmsHPROFILE hProfile, cmsIOHANDLER* io)
+{
+    cmsUInt32Number PCS;
+    cmsFloat32Number Start, End;
+    cmsUInt16Number Steps;
+    IccMaxRefSpectralPCS* Data;
 
-    if (PCS   != NULL) *PCS   = _cmsAdjustEndianess32(RawPCS);
-    if (Start != NULL) *Start = _cmsHalf2Float(_cmsAdjustEndianess16(RawStart));
-    if (End   != NULL) *End   = _cmsHalf2Float(_cmsAdjustEndianess16(RawEnd));
-    if (Steps != NULL) *Steps = _cmsAdjustEndianess16(RawSteps);
+    if (hProfile == NULL || io == NULL) return TRUE;
+
+    // Bytes 100..109 only mean "spectral PCS" from ICC.2 onwards; in ICC.1 they are reserved,
+    // and real v2 profiles in the wild are not always careful about what they leave in reserved
+    // space. Scoping the field to the versions where it exists is not policing conformance --
+    // it is reading the field the spec actually defines -- and it keeps the storage symmetric
+    // with IccMaxRefSetSpectralPCS, which refuses anything below v5 for the same reason.
+    if (!IsSpectralCapableVersion(hProfile)) return TRUE;
+
+    if (!io ->Seek(io, 100)) return TRUE;
+
+    if (!_cmsReadUInt32Number(io, &PCS)) return TRUE;
+    if (!ReadFloat16Number(io, &Start)) return TRUE;
+    if (!ReadFloat16Number(io, &End)) return TRUE;
+    if (!_cmsReadUInt16Number(io, &Steps)) return TRUE;
+
+    // The ordinary case, and the one that must not look like an error: an ICC.1 profile, whose
+    // bytes 100..109 are reserved and zero, or an ICC.2 profile whose PCS is not spectral.
+    if (PCS == 0) return TRUE;
+
+    Data = (IccMaxRefSpectralPCS*) _cmsMalloc(ContextID, sizeof(IccMaxRefSpectralPCS));
+    if (Data == NULL) return TRUE;
+
+    Data ->PCS   = PCS;
+    Data ->Start = Start;
+    Data ->End   = End;
+    Data ->Steps = Steps;
+
+    _cmsSetProfileUserData(hProfile, Data, FreeSpectralPCS);
 
     return TRUE;
 }
 
-cmsBool IccMaxRefSetSpectralPCSInMem(void* Profile, cmsUInt32Number Size,
-                                  cmsUInt32Number PCS, cmsFloat32Number Start,
-                                  cmsFloat32Number End, cmsUInt16Number Steps)
+// Header write callback. The core has already written the 128 byte header with bytes 100..127
+// zeroed, so contributing nothing simply leaves those zeros in place -- which is the right
+// answer for any profile with no spectral PCS.
+static
+cmsBool IccMaxRefWriteHeader(cmsContext ContextID, cmsHPROFILE hProfile, cmsIOHANDLER* io)
 {
-    cmsUInt8Number* p = (cmsUInt8Number*) Profile;
-    cmsUInt32Number RawVersion;
-    cmsUInt32Number RawPCS;
-    cmsUInt16Number RawStart, RawEnd, RawSteps;
+    const IccMaxRefSpectralPCS* Data;
 
-    if (Profile == NULL || Size < 128) return FALSE;
+    if (hProfile == NULL || io == NULL) return TRUE;
 
-    // Header bytes 8..11 are the version number, major.minor.bugfix.reserved with major in the
-    // top byte. Those bytes 100..109 are reserved in ICC.1, so writing them into a v4 (or
-    // earlier) profile would corrupt it -- refuse anything below v5.
-    memmove(&RawVersion, p + 8, 4);
-    if ((_cmsAdjustEndianess32(RawVersion) >> 24) < 5) return FALSE;
+    Data = (const IccMaxRefSpectralPCS*) _cmsGetProfileUserData(hProfile);
+    if (Data == NULL || Data ->PCS == 0) return TRUE;
 
-    RawPCS   = _cmsAdjustEndianess32(PCS);
-    RawStart = _cmsAdjustEndianess16(_cmsFloat2Half(Start));
-    RawEnd   = _cmsAdjustEndianess16(_cmsFloat2Half(End));
-    RawSteps = _cmsAdjustEndianess16(Steps);
+    if (!IsSpectralCapableVersion(hProfile)) return TRUE;
 
-    memmove(p + 100, &RawPCS,   4);
-    memmove(p + 104, &RawStart, 2);
-    memmove(p + 106, &RawEnd,   2);
-    memmove(p + 108, &RawSteps, 2);
+    if (!io ->Seek(io, 100)) return FALSE;
+
+    if (!_cmsWriteUInt32Number(io, Data ->PCS)) return FALSE;
+    if (!WriteFloat16Number(io, Data ->Start)) return FALSE;
+    if (!WriteFloat16Number(io, Data ->End)) return FALSE;
+    if (!_cmsWriteUInt16Number(io, Data ->Steps)) return FALSE;
+
+    return TRUE;
+
+    cmsUNUSED_PARAMETER(ContextID);
+}
+
+cmsBool IccMaxRefGetSpectralPCS(cmsHPROFILE hProfile, cmsUInt32Number* PCS,
+                                cmsFloat32Number* Start, cmsFloat32Number* End,
+                                cmsUInt16Number* Steps)
+{
+    const IccMaxRefSpectralPCS* Data;
+
+    if (hProfile == NULL) return FALSE;
+
+    Data = (const IccMaxRefSpectralPCS*) _cmsGetProfileUserData(hProfile);
+    if (Data == NULL) return FALSE;
+
+    if (PCS   != NULL) *PCS   = Data ->PCS;
+    if (Start != NULL) *Start = Data ->Start;
+    if (End   != NULL) *End   = Data ->End;
+    if (Steps != NULL) *Steps = Data ->Steps;
+
+    return TRUE;
+}
+
+cmsBool IccMaxRefSetSpectralPCS(cmsHPROFILE hProfile, cmsUInt32Number PCS,
+                                cmsFloat32Number Start, cmsFloat32Number End,
+                                cmsUInt16Number Steps)
+{
+    IccMaxRefSpectralPCS* Data;
+
+    if (hProfile == NULL) return FALSE;
+
+    if (!IsSpectralCapableVersion(hProfile)) return FALSE;
+
+    // A PCS of 0 means "no spectral PCS". Drop the record: _cmsSetProfileUserData frees the
+    // old one through FreeSpectralPCS, and the write callback will leave the core's zeros.
+    if (PCS == 0) {
+
+        _cmsSetProfileUserData(hProfile, NULL, NULL);
+        return TRUE;
+    }
+
+    Data = (IccMaxRefSpectralPCS*) _cmsMalloc(cmsGetProfileContextID(hProfile),
+                                              sizeof(IccMaxRefSpectralPCS));
+    if (Data == NULL) return FALSE;
+
+    Data ->PCS   = PCS;
+    Data ->Start = Start;
+    Data ->End   = End;
+    Data ->Steps = Steps;
+
+    _cmsSetProfileUserData(hProfile, Data, FreeSpectralPCS);
 
     return TRUE;
 }
 
 
-// ********************************************************************************
-// The plug-in list
 // ********************************************************************************
 //
 // Chained back to front so that IccMaxRefGetPlugin can return a single head. Every entry
-// is an addition: none of these nine signatures is handled by the library.
+// is an addition: none of these nine signatures is handled by the library, and the header
+// entry claims only fields the core leaves reserved.
+//
+// Every entry declares ExpectedVersion 2190, the release that added the header plug-in
+// type: this plug-in needs that hook, so declaring anything earlier would be false.
 
 static cmsPluginParametricCurves IccMaxRefCurvesPlugin = {
 
-    { cmsPluginMagicNumber, 2060, cmsPluginParametricCurveSig, NULL },
+    { cmsPluginMagicNumber, 2190, cmsPluginParametricCurveSig, NULL },
 
     5,                                    // Five function types
     { 9, 10, 11, 12, 13 },                // ICC.2 Table 111 types 3 to 7, plus 6
@@ -1300,7 +1413,7 @@ static cmsPluginParametricCurves IccMaxRefCurvesPlugin = {
 
 static cmsPluginTag IccMaxRefEmbeddedTagPlugin = {
 
-    { cmsPluginMagicNumber, 2060, cmsPluginTagSig, (cmsPluginBase*) &IccMaxRefCurvesPlugin },
+    { cmsPluginMagicNumber, 2190, cmsPluginTagSig, (cmsPluginBase*) &IccMaxRefCurvesPlugin },
 
     IccMaxRefSigEmbeddedV5Tag,
     { 1, 1, { IccMaxRefSigEmbeddedProfileType }, NULL }
@@ -1308,7 +1421,7 @@ static cmsPluginTag IccMaxRefEmbeddedTagPlugin = {
 
 static cmsPluginTagType IccMaxRefEmbeddedTypePlugin = {
 
-    { cmsPluginMagicNumber, 2060, cmsPluginTagTypeSig, (cmsPluginBase*) &IccMaxRefEmbeddedTagPlugin },
+    { cmsPluginMagicNumber, 2190, cmsPluginTagTypeSig, (cmsPluginBase*) &IccMaxRefEmbeddedTagPlugin },
 
     { IccMaxRefSigEmbeddedProfileType,
       Type_EmbeddedProfile_Read, Type_EmbeddedProfile_Write,
@@ -1317,7 +1430,7 @@ static cmsPluginTagType IccMaxRefEmbeddedTypePlugin = {
 
 static cmsPluginMultiProcessElement IccMaxRefExtClutPlugin = {
 
-    { cmsPluginMagicNumber, 2060, cmsPluginMultiProcessElementSig,
+    { cmsPluginMagicNumber, 2190, cmsPluginMultiProcessElementSig,
       (cmsPluginBase*) &IccMaxRefEmbeddedTypePlugin },
 
     { (cmsTagTypeSignature) IccMaxRefSigExtCLutElemType,
@@ -1327,7 +1440,7 @@ static cmsPluginMultiProcessElement IccMaxRefExtClutPlugin = {
 
 static cmsPluginTagType IccMaxRefFloat16ArrayTypePlugin = {
 
-    { cmsPluginMagicNumber, 2060, cmsPluginTagTypeSig, (cmsPluginBase*) &IccMaxRefExtClutPlugin },
+    { cmsPluginMagicNumber, 2190, cmsPluginTagTypeSig, (cmsPluginBase*) &IccMaxRefExtClutPlugin },
 
     { IccMaxRefSigFloat16ArrayType,
       Type_Float16Array_Read, Type_Float16Array_Write,
@@ -1336,7 +1449,7 @@ static cmsPluginTagType IccMaxRefFloat16ArrayTypePlugin = {
 
 static cmsPluginTagType IccMaxRefFloat32ArrayTypePlugin = {
 
-    { cmsPluginMagicNumber, 2060, cmsPluginTagTypeSig,
+    { cmsPluginMagicNumber, 2190, cmsPluginTagTypeSig,
       (cmsPluginBase*) &IccMaxRefFloat16ArrayTypePlugin },
 
     { IccMaxRefSigFloat32ArrayType,
@@ -1349,7 +1462,7 @@ static cmsPluginTagType IccMaxRefFloat32ArrayTypePlugin = {
 // path, so dropping fl16 here would make a real fl16-encoded profile unreadable.
 static cmsPluginTag IccMaxRefSpectralWhitePointTagPlugin = {
 
-    { cmsPluginMagicNumber, 2060, cmsPluginTagSig, (cmsPluginBase*) &IccMaxRefFloat32ArrayTypePlugin },
+    { cmsPluginMagicNumber, 2190, cmsPluginTagSig, (cmsPluginBase*) &IccMaxRefFloat32ArrayTypePlugin },
 
     IccMaxRefSigSpectralWhitePointTag,
     { 1, 2, { IccMaxRefSigFloat32ArrayType, IccMaxRefSigFloat16ArrayType }, NULL }
@@ -1357,7 +1470,7 @@ static cmsPluginTag IccMaxRefSpectralWhitePointTagPlugin = {
 
 static cmsPluginTagType IccMaxRefSpectralViewingConditionsTypePlugin = {
 
-    { cmsPluginMagicNumber, 2060, cmsPluginTagTypeSig,
+    { cmsPluginMagicNumber, 2190, cmsPluginTagTypeSig,
       (cmsPluginBase*) &IccMaxRefSpectralWhitePointTagPlugin },
 
     { IccMaxRefSigSpectralViewingConditionsType,
@@ -1367,14 +1480,32 @@ static cmsPluginTagType IccMaxRefSpectralViewingConditionsTypePlugin = {
 
 static cmsPluginTag IccMaxRefSpectralViewingConditionsTagPlugin = {
 
-    { cmsPluginMagicNumber, 2060, cmsPluginTagSig,
+    { cmsPluginMagicNumber, 2190, cmsPluginTagSig,
       (cmsPluginBase*) &IccMaxRefSpectralViewingConditionsTypePlugin },
 
     IccMaxRefSigSpectralViewingConditionsTag,
     { 1, 1, { IccMaxRefSigSpectralViewingConditionsType }, NULL }
 };
 
+// The header hook, reading and writing ICC.2:2023 7.2.1 bytes 100..109. ICCVersion is the
+// highest profile version this plug-in takes responsibility for, and the core's gate is
+// inclusive: 0x05100000 accepts everything up to and including ICC 5.1, which is what the
+// hybrid-printer fixture and the ICS use. It deliberately stops there rather than claiming
+// 5.2 or later. A future minor version could add header fields this plug-in would not
+// understand, and the extension point exists precisely so that a plug-in can state what it
+// actually supports -- so raising this is a decision to be taken when those fields are known,
+// not in advance.
+static cmsPluginHeader IccMaxRefHeaderPlugin = {
+
+    { cmsPluginMagicNumber, 2190, cmsPluginHeaderSig,
+      (cmsPluginBase*) &IccMaxRefSpectralViewingConditionsTagPlugin },
+
+    0x05100000,
+    IccMaxRefReadHeader,
+    IccMaxRefWriteHeader
+};
+
 cmsPluginBase* CMSEXPORT IccMaxRefGetPlugin(void)
 {
-    return (cmsPluginBase*) &IccMaxRefSpectralViewingConditionsTagPlugin;
+    return (cmsPluginBase*) &IccMaxRefHeaderPlugin;
 }
