@@ -22,7 +22,8 @@ testcms_SOURCES = testcms2.c testplugin.c zoo_icc.c iccmax_plugin.c \
 EXTRA_DIST = test1.icc bad.icc toosmall.icc test2.icc \
              test3.icc test4.icc \
              test5.icc ibm-t61.icc crayons.icc bad_mpe.icc \
-             HybridPrinterCMYK_small.icc
+             HybridPrinterCMYK_small.icc \
+             subsample_clut.py
 
 check:
 	if [ $(top_srcdir) != $(top_builddir) ]; then \
