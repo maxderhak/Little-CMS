@@ -8997,16 +8997,6 @@ cmsInt32Number CheckCLUTOverflowRejected(void)
 // iccMAX hybrid printer profile, read through the additive plug-in in iccmax_plugin.c
 // --------------------------------------------------------------------------------------------------
 
-// Little-CMS 2.19 does not release a profile's plug-in user data when the profile is closed, so
-// a profile carrying a spectral PCS has to hand the storage back first. Clearing is exactly what
-// IccMaxRefSetSpectralPCS with a PCS of 0 does. Harmless on a profile that has none.
-static
-void ReleaseSpectralPCS(cmsHPROFILE hProfile)
-{
-    if (hProfile != NULL)
-        IccMaxRefSetSpectralPCS(hProfile, 0, 0.0f, 0.0f, 0);
-}
-
 // The DToB3 pipeline in the fixture is a curve set of four shaper curves, then an
 // extendedCLUTElement reducing 4 inks to basis coefficients, then a matrix expanding those to 36
 // wavelengths. Three of the shaper curves are singleSampledCurves; the first is deliberately a
@@ -9259,7 +9249,6 @@ int CheckIccMaxRefHybridPrinter(void)
 Done:
     cmsSetLogErrorHandler(FatalErrorQuit);
 
-    ReleaseSpectralPCS(hEmbedded);
 
     if (hEmbedded != NULL) cmsCloseProfile(hEmbedded);
     if (hOuter != NULL) cmsCloseProfile(hOuter);
@@ -9648,7 +9637,6 @@ Done:
 
     if (Src != NULL) IccMaxRefFreeFloatArray(Src);
     if (h != NULL) cmsCloseProfile(h);
-    ReleaseSpectralPCS(hEmbedded);
 
     if (hEmbedded != NULL) cmsCloseProfile(hEmbedded);
     if (hOuter != NULL) cmsCloseProfile(hOuter);
@@ -10054,7 +10042,6 @@ int CheckIccMaxRefSvcnAgainstFixture(void)
 Done:
     cmsSetLogErrorHandler(FatalErrorQuit);
 
-    ReleaseSpectralPCS(hEmbedded);
 
     if (hEmbedded != NULL) cmsCloseProfile(hEmbedded);
     if (hOuter != NULL) cmsCloseProfile(hOuter);
@@ -10316,9 +10303,6 @@ int CheckIccMaxRefSpectralPCSHeader(void)
 Done:
     cmsSetLogErrorHandler(FatalErrorQuit);
 
-    ReleaseSpectralPCS(hEmbedded);
-    ReleaseSpectralPCS(hReopened);
-    ReleaseSpectralPCS(h);
 
     if (Mem != NULL) free(Mem);
     if (hV4 != NULL) cmsCloseProfile(hV4);
@@ -10850,8 +10834,6 @@ Done:
     if (wSvcn != NULL) IccMaxRefFreeSpectralViewingConditions(wSvcn);
     if (wSwpt != NULL) IccMaxRefFreeFloatArray(wSwpt);
 
-    ReleaseSpectralPCS(hReadSub);
-    ReleaseSpectralPCS(hSub);
 
     if (hReadSub != NULL) cmsCloseProfile(hReadSub);
     if (hReadOuter != NULL) cmsCloseProfile(hReadOuter);
